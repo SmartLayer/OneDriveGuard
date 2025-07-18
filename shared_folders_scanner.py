@@ -1,13 +1,9 @@
 #!/usr/bin/env python3
 """
-OneDrive Shared Folders Scanner (Efficient) - Find folders shared by you using Graph API.
+OneDrive Shared Folders Scanner - Find folders shared by you using Graph API.
 
-This script uses efficient Graph API methods to find shared folders without iterating
-through every folder in your OneDrive:
-
-Method 1: Search for items with permissions (preferred for large OneDrives)
-Method 2: Delta query with permission expansion (alternative approach)
-Method 3: Fallback: Selective scanning of common shared folders
+This script efficiently finds all shared folders in your OneDrive by recursively
+traversing the entire folder structure and checking permissions for each folder.
 
 Distinguished sharing types:
 - 🔗 Folders shared via link
@@ -23,13 +19,12 @@ Usage:
     
 Options:
     --remote REMOTE_NAME    OneDrive remote name (default: OneDrive)
-    --method METHOD         Search method: search, delta, or fallback (default: search)
     --max-results N         Maximum results to return (default: 1000)
     
 Examples:
     python shared_folders_scanner.py
-    python shared_folders_scanner.py --method search --max-results 500
-    python shared_folders_scanner.py --remote "MyOneDrive" --method delta
+    python shared_folders_scanner.py --max-results 500
+    python shared_folders_scanner.py --remote "MyOneDrive"
 """
 
 import requests
@@ -160,13 +155,12 @@ def get_item_path(item_id: str, access_token: str) -> str:
     except Exception:
         return 'Unknown'
 
-def method_search_with_permissions(access_token: str, max_results: int = 1000) -> List[Dict]:
+def scan_shared_folders_recursive(access_token: str, max_results: int = 1000) -> List[Dict]:
     """
-    Method 1: Use Graph search to find folders and check their permissions.
-    This is the most efficient method for finding shared folders.
-    Now includes recursive traversal of all folders.
+    Recursively scan OneDrive for all shared folders by traversing the entire folder structure.
+    This is the most efficient and comprehensive method for finding shared folders.
     """
-    print("🔍 Using Graph Search method to find shared folders...")
+    print("🔍 Scanning OneDrive for shared folders recursively...")
     
     headers = {"Authorization": f"Bearer {access_token}"}
     shared_folders = []
@@ -265,214 +259,18 @@ def method_search_with_permissions(access_token: str, max_results: int = 1000) -
     except Exception as e:
         print(f"❌ Search error: {e}")
     
-    print(f"✅ Search method complete. Found {len(shared_folders)} shared folders.")
+    print(f"✅ Scan complete. Found {len(shared_folders)} shared folders.")
     print(f"   Checked {len(checked_folders)} total folders recursively.")
     return shared_folders
 
-def method_delta_query(access_token: str, max_results: int = 1000) -> List[Dict]:
-    """
-    Method 2: Use delta query to get all drive changes and check permissions.
-    More comprehensive - gets ALL items in the drive recursively.
-    """
-    print("🔄 Using Delta Query method to find shared folders...")
-    
-    headers = {"Authorization": f"Bearer {access_token}"}
-    shared_folders = []
-    checked_folders = set()
-    
-    # Start delta query from root - get ALL items without artificial limits
-    delta_url = "https://graph.microsoft.com/v1.0/me/drive/root/delta"
-    
-    try:
-        all_items = []
-        next_link = delta_url
-        
-        print("📂 Collecting all items via delta query (this may take a while)...")
-        
-        # Collect all items using pagination
-        while next_link and len(all_items) < max_results:
-            if next_link == delta_url:
-                # First request
-                resp = requests.get(f"{delta_url}?$top=1000", headers=headers, timeout=60)
-            else:
-                # Subsequent requests
-                resp = requests.get(next_link, headers=headers, timeout=60)
-            
-            if resp.status_code != 200:
-                print(f"⚠️  Delta query failed: {resp.status_code}")
-                break
-            
-            delta_data = resp.json()
-            items = delta_data.get("value", [])
-            all_items.extend(items)
-            
-            print(f"   Collected {len(all_items)} items so far...")
-            
-            # Get next page link
-            next_link = delta_data.get("@odata.nextLink")
-            
-            # Small delay to avoid rate limiting
-            time.sleep(0.1)
-        
-        print(f"📂 Delta query returned {len(all_items)} total items to check...")
-        
-        # Filter for folders only and check permissions
-        checked_count = 0
-        for item in all_items:
-            # Only check folders that aren't deleted
-            if 'folder' not in item or item.get('deleted'):
-                continue
-            
-            item_id = item.get('id')
-            if item_id in checked_folders:
-                continue
-            
-            checked_folders.add(item_id)
-            checked_count += 1
-            
-            if checked_count % 50 == 0:
-                print(f"   Checked {checked_count} folders...")
-            
-            item_name = item.get('name', 'Unknown')
-            
-            # Get permissions
-            permissions_url = f"https://graph.microsoft.com/v1.0/me/drive/items/{item_id}/permissions"
-            try:
-                perm_resp = requests.get(permissions_url, headers=headers, timeout=30)
-                if perm_resp.status_code == 200:
-                    permissions_data = perm_resp.json()
-                    permissions = permissions_data.get("value", [])
-                    
-                    has_link, has_direct, perm_count, shared_users = analyze_permissions(permissions)
-                    
-                    if has_link or has_direct:
-                        item_path = get_item_path(item_id, access_token)
-                        
-                        symbol = "🔗" if has_link else "👥"
-                        share_type = "Link sharing" if has_link else "Direct permissions"
-                        
-                        shared_folders.append({
-                            'path': item_path,
-                            'name': item_name,
-                            'id': item_id,
-                            'symbol': symbol,
-                            'share_type': share_type,
-                            'has_link_sharing': has_link,
-                            'has_direct_sharing': has_direct,
-                            'permission_count': perm_count,
-                            'shared_users': shared_users
-                        })
-                        
-                        print(f"   ✅ Found shared: {symbol} {item_path}")
-            
-            except Exception:
-                continue
-    
-    except Exception as e:
-        print(f"❌ Delta query error: {e}")
-    
-    print(f"✅ Delta method complete. Found {len(shared_folders)} shared folders.")
-    print(f"   Checked {len(checked_folders)} total folders from delta query.")
-    return shared_folders
 
-def method_fallback_selective(access_token: str, max_results: int = 1000) -> List[Dict]:
-    """
-    Method 3: Fallback method - check common folders that are likely to be shared.
-    Most efficient for users who primarily share from common locations.
-    """
-    print("📁 Using Fallback Selective method (common shared locations)...")
-    
-    headers = {"Authorization": f"Bearer {access_token}"}
-    shared_folders = []
-    
-    # Common folders that are typically shared
-    common_paths = [
-        "Documents",
-        "Pictures", 
-        "Desktop",
-        "Projects",
-        "Shared",
-        "Public",
-        "Work",
-        "Team"
-    ]
-    
-    def check_folder_and_children(folder_path: str, max_depth: int = 2, current_depth: int = 0):
-        """Recursively check a folder and its immediate children for sharing."""
-        if current_depth >= max_depth:
-            return
-        
-        try:
-            # Get folder by path
-            url = f"https://graph.microsoft.com/v1.0/me/drive/root:/{folder_path}"
-            resp = requests.get(url, headers=headers, timeout=30)
-            
-            if resp.status_code == 200:
-                folder_data = resp.json()
-                folder_id = folder_data.get('id')
-                
-                # Check if this folder is shared
-                permissions_url = f"https://graph.microsoft.com/v1.0/me/drive/items/{folder_id}/permissions"
-                perm_resp = requests.get(permissions_url, headers=headers, timeout=30)
-                
-                if perm_resp.status_code == 200:
-                    permissions_data = perm_resp.json()
-                    permissions = permissions_data.get("value", [])
-                    
-                    has_link, has_direct, perm_count, shared_users = analyze_permissions(permissions)
-                    
-                    if has_link or has_direct:
-                        symbol = "🔗" if has_link else "👥"
-                        share_type = "Link sharing" if has_link else "Direct permissions"
-                        
-                        shared_folders.append({
-                            'path': folder_path,
-                            'name': folder_data.get('name', folder_path.split('/')[-1]),
-                            'id': folder_id,
-                            'symbol': symbol,
-                            'share_type': share_type,
-                            'has_link_sharing': has_link,
-                            'has_direct_sharing': has_direct,
-                            'permission_count': perm_count,
-                            'shared_users': shared_users
-                        })
-                        
-                        print(f"   ✅ Found shared: {symbol} {folder_path}")
-                
-                # Check children of this folder
-                if current_depth < max_depth - 1:
-                    children_url = f"https://graph.microsoft.com/v1.0/me/drive/items/{folder_id}/children"
-                    children_resp = requests.get(children_url, headers=headers, timeout=30)
-                    
-                    if children_resp.status_code == 200:
-                        children_data = children_resp.json()
-                        children = children_data.get("value", [])
-                        
-                        for child in children[:10]:  # Limit to first 10 children
-                            if 'folder' in child:
-                                child_name = child.get('name', 'Unknown')
-                                child_path = f"{folder_path}/{child_name}"
-                                check_folder_and_children(child_path, max_depth, current_depth + 1)
-        
-        except Exception:
-            # Folder doesn't exist or no access
-            pass
-    
-    # Check each common path
-    for path in common_paths:
-        print(f"   Checking: {path}")
-        check_folder_and_children(path)
-    
-    print(f"✅ Fallback method complete. Found {len(shared_folders)} shared folders.")
-    return shared_folders
 
-def scan_shared_folders(rclone_remote: str = "OneDrive", method: str = "search", max_results: int = 1000) -> None:
+def scan_shared_folders(rclone_remote: str = "OneDrive", max_results: int = 1000) -> None:
     """
-    Scan OneDrive for all shared folders using the specified method.
+    Scan OneDrive for all shared folders by recursively traversing the folder structure.
     """
-    print(f"=== OneDrive Shared Folders Scanner (Efficient) ===")
+    print(f"=== OneDrive Shared Folders Scanner ===")
     print(f"Remote: {rclone_remote}")
-    print(f"Method: {method}")
     print(f"Max results: {max_results}")
     print()
     
@@ -483,20 +281,9 @@ def scan_shared_folders(rclone_remote: str = "OneDrive", method: str = "search",
     
     print("✅ Successfully extracted access token from rclone.conf")
     
-    # Choose method and scan
+    # Scan for shared folders
     start_time = time.time()
-    
-    if method == "search":
-        shared_folders = method_search_with_permissions(access_token, max_results)
-    elif method == "delta":
-        shared_folders = method_delta_query(access_token, max_results)
-    elif method == "fallback":
-        shared_folders = method_fallback_selective(access_token, max_results)
-    else:
-        print(f"❌ Unknown method: {method}")
-        print("Available methods: search, delta, fallback")
-        return
-    
+    shared_folders = scan_shared_folders_recursive(access_token, max_results)
     scan_time = time.time() - start_time
     
     print()
@@ -526,27 +313,21 @@ def scan_shared_folders(rclone_remote: str = "OneDrive", method: str = "search",
         print("  - You haven't shared any folders")
         print("  - All shared items are files (not folders)")
         print("  - Permission issues accessing some folders")
-        
-        if method == "fallback":
-            print("  - Try the 'search' method for a more comprehensive scan")
     
     print("\n=== Scan Complete ===")
-    print(f"💡 Tip: For 20,000+ folders, the '{method}' method is much more efficient")
-    print("     than iterating through every folder individually!")
+    print("💡 Tip: This recursive scan efficiently checks all folders in your OneDrive!")
 
 def main():
     """Main function"""
-    parser = argparse.ArgumentParser(description="Efficiently scan OneDrive for shared folders")
+    parser = argparse.ArgumentParser(description="Scan OneDrive for shared folders")
     parser.add_argument("--remote", default="OneDrive", 
                        help="Name of the OneDrive remote (default: OneDrive)")
-    parser.add_argument("--method", choices=["search", "delta", "fallback"], default="search",
-                       help="Search method to use (default: search)")
     parser.add_argument("--max-results", type=int, default=1000,
                        help="Maximum results to return (default: 1000)")
     
     args = parser.parse_args()
     
-    print("OneDrive Shared Folders Scanner (Efficient)")
+    print("OneDrive Shared Folders Scanner")
     print("=" * 50)
     
     # Check if requests is available
@@ -558,7 +339,7 @@ def main():
         return
     
     # Execute the scan
-    scan_shared_folders(args.remote, args.method, args.max_results)
+    scan_shared_folders(args.remote, args.max_results)
 
 if __name__ == "__main__":
     main()
