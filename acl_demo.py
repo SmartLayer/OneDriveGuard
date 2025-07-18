@@ -13,16 +13,16 @@ Prerequisites:
 - Valid OAuth token in ~/.config/rclone/rclone.conf
 
 Usage:
-    python acl_demo.py <command> <item_path> [options]
+    python acl_demo.py <command> [options]
     
 Commands:
     list <item_path> [remote_name]     - List ACL for the specified item
-    invite <item_path> <email> [remote_name]  - Send invitation with editing permission (Personal OneDrive)
+    invite <email> <folder_path>... [remote_name]  - Send invitation with editing permission to multiple folders (Personal OneDrive)
     remove <item_path> <email> [remote_name] - Remove all permissions for the email
     
 Examples:
     python acl_demo.py list "Documents"
-    python acl_demo.py invite "Documents/Project" amanuensis@weiwu.au
+    python acl_demo.py invite amanuensis@weiwu.au "Documents/Project" "Documents/Shared"
     python acl_demo.py remove "Documents/Project" amanuensis@weiwu.au "MyOneDrive"
 """
 
@@ -214,18 +214,18 @@ def list_item_acl(item_path: str, rclone_remote: str = "OneDrive") -> None:
     except Exception as e:
         print(f"❌ Unexpected error: {e}")
 
-def invite_permission(item_path: str, email: str, rclone_remote: str = "OneDrive") -> None:
+def invite_permission_to_folders(email: str, folder_paths: List[str], rclone_remote: str = "OneDrive") -> None:
     """
-    Send invitation with editing permission for a specific email address (Personal OneDrive).
+    Send invitation with editing permission for a specific email address to multiple folders (Personal OneDrive).
     
     Args:
-        item_path: Path to the folder or file in OneDrive
         email: Email address to send invitation to
+        folder_paths: List of folder paths in OneDrive to grant access to
         rclone_remote: Name of the OneDrive remote in rclone.conf
     """
-    print(f"=== OneDrive ACL Manager - Send Invitation (Personal OneDrive) ===")
-    print(f"Item: {item_path}")
+    print(f"=== OneDrive ACL Manager - Send Invitation to Multiple Folders (Personal OneDrive) ===")
     print(f"Email: {email}")
+    print(f"Folders: {', '.join(folder_paths)}")
     print(f"Remote: {rclone_remote}")
     print()
     
@@ -236,76 +236,107 @@ def invite_permission(item_path: str, email: str, rclone_remote: str = "OneDrive
     
     print("✅ Successfully extracted access token from rclone.conf")
     
-    # Get item ID
-    item_id = get_item_id(item_path, access_token)
-    if not item_id:
-        return
+    # Process each folder
+    successful_invites = 0
+    failed_invites = 0
     
-    # Send invitation (Personal OneDrive)
-    headers = {
-        "Authorization": f"Bearer {access_token}",
-        "Content-Type": "application/json"
-    }
-    
-    # Send invitation via the invite endpoint (Personal OneDrive)
-    invite_url = f"https://graph.microsoft.com/v1.0/me/drive/items/{item_id}/invite"
-    print(f"\nSending invitation via: {invite_url}")
-    
-    invite_data = {
-        "requireSignIn": True,
-        "roles": ["write"],
-        "recipients": [
-            {
-                "email": email
-            }
-        ],
-        "message": "You have been granted editing access to this item."
-    }
-    
-    print(f"Invitation data: {json.dumps(invite_data, indent=2)}")
-    
-    try:
-        resp = requests.post(invite_url, headers=headers, json=invite_data, timeout=30)
-        print(f"Response Status: {resp.status_code}")
+    for i, folder_path in enumerate(folder_paths, 1):
+        print(f"\n--- Processing folder {i}/{len(folder_paths)}: {folder_path} ---")
         
-        if resp.status_code == 200:
-            invite_response = resp.json()
-            print("✅ Successfully sent invitation for editing permission!")
+        # Get item ID
+        item_id = get_item_id(folder_path, access_token)
+        if not item_id:
+            print(f"❌ Skipping folder {folder_path} - could not get item ID")
+            failed_invites += 1
+            continue
+        
+        # Send invitation (Personal OneDrive)
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json"
+        }
+        
+        # Send invitation via the invite endpoint (Personal OneDrive)
+        invite_url = f"https://graph.microsoft.com/v1.0/me/drive/items/{item_id}/invite"
+        print(f"Sending invitation via: {invite_url}")
+        
+        invite_data = {
+            "requireSignIn": True,
+            "roles": ["write"],
+            "recipients": [
+                {
+                    "email": email
+                }
+            ],
+            "message": "You have been granted editing access to this item."
+        }
+        
+        try:
+            resp = requests.post(invite_url, headers=headers, json=invite_data, timeout=30)
+            print(f"Response Status: {resp.status_code}")
             
-            # Show invitation details
-            value = invite_response.get('value', [])
-            if value:
-                for invite in value:
-                    print(f"Invitation sent to: {invite.get('grantedTo', {}).get('user', {}).get('email', 'N/A')}")
-                    print(f"Roles: {', '.join(invite.get('roles', []))}")
-                    if invite.get('invitation'):
-                        print(f"Invitation URL: {invite['invitation'].get('inviteUrl', 'N/A')}")
-        elif resp.status_code == 201:
-            permission = resp.json()
-            print("✅ Successfully added editing permission!")
-            print(f"Permission ID: {permission.get('id', 'N/A')}")
-            print(f"Roles: {', '.join(permission.get('roles', []))}")
-            
-            # Show granted user info
-            granted_to = permission.get('grantedTo')
-            if granted_to and granted_to.get('user'):
-                user = granted_to['user']
-                print(f"Granted to: {user.get('displayName', 'N/A')} ({user.get('email', 'N/A')})")
-        elif resp.status_code == 400:
-            print("❌ Bad request - check the email address format")
-            print(f"Response: {resp.text}")
-        elif resp.status_code == 403:
-            print("❌ Access denied - you may not have permission to modify ACL for this item")
-        elif resp.status_code == 404:
-            print("❌ User not found - the email address may not exist in your organisation")
-        else:
-            print(f"❌ Failed to add permission: {resp.status_code}")
-            print(f"Response: {resp.text}")
-            
-    except requests.exceptions.RequestException as e:
-        print(f"❌ Network error: {e}")
-    except Exception as e:
-        print(f"❌ Unexpected error: {e}")
+            if resp.status_code == 200:
+                invite_response = resp.json()
+                print("✅ Successfully sent invitation for editing permission!")
+                
+                # Show invitation details
+                value = invite_response.get('value', [])
+                if value:
+                    for invite in value:
+                        print(f"Invitation sent to: {invite.get('grantedTo', {}).get('user', {}).get('email', 'N/A')}")
+                        print(f"Roles: {', '.join(invite.get('roles', []))}")
+                        if invite.get('invitation'):
+                            print(f"Invitation URL: {invite['invitation'].get('inviteUrl', 'N/A')}")
+                successful_invites += 1
+                
+            elif resp.status_code == 201:
+                permission = resp.json()
+                print("✅ Successfully added editing permission!")
+                print(f"Permission ID: {permission.get('id', 'N/A')}")
+                print(f"Roles: {', '.join(permission.get('roles', []))}")
+                
+                # Show granted user info
+                granted_to = permission.get('grantedTo')
+                if granted_to and granted_to.get('user'):
+                    user = granted_to['user']
+                    print(f"Granted to: {user.get('displayName', 'N/A')} ({user.get('email', 'N/A')})")
+                successful_invites += 1
+                
+            elif resp.status_code == 400:
+                print("❌ Bad request - check the email address format")
+                print(f"Response: {resp.text}")
+                failed_invites += 1
+                
+            elif resp.status_code == 403:
+                print("❌ Access denied - you may not have permission to modify ACL for this item")
+                failed_invites += 1
+                
+            elif resp.status_code == 404:
+                print("❌ User not found - the email address may not exist in your organisation")
+                failed_invites += 1
+                
+            else:
+                print(f"❌ Failed to add permission: {resp.status_code}")
+                print(f"Response: {resp.text}")
+                failed_invites += 1
+                
+        except requests.exceptions.RequestException as e:
+            print(f"❌ Network error: {e}")
+            failed_invites += 1
+        except Exception as e:
+            print(f"❌ Unexpected error: {e}")
+            failed_invites += 1
+    
+    # Summary
+    print(f"\n=== Invitation Summary ===")
+    print(f"Total folders processed: {len(folder_paths)}")
+    print(f"Successful invitations: {successful_invites}")
+    print(f"Failed invitations: {failed_invites}")
+    
+    if successful_invites > 0:
+        print(f"✅ Successfully invited {email} to {successful_invites} folder(s)")
+    if failed_invites > 0:
+        print(f"❌ Failed to invite {email} to {failed_invites} folder(s)")
 
 def remove_permission(item_path: str, email: str, rclone_remote: str = "OneDrive") -> None:
     """
@@ -404,9 +435,9 @@ def main():
     list_parser.add_argument("remote", nargs="?", default="OneDrive", help="Name of the OneDrive remote (default: OneDrive)")
     
     # Invite command
-    invite_parser = subparsers.add_parser('invite', help='Send invitation with editing permission (Personal OneDrive)')
-    invite_parser.add_argument("item_path", help="Path to the folder or file in OneDrive")
+    invite_parser = subparsers.add_parser('invite', help='Send invitation with editing permission to multiple folders (Personal OneDrive)')
     invite_parser.add_argument("email", help="Email address to send invitation to")
+    invite_parser.add_argument("folder_paths", nargs="+", help="One or more folder paths in OneDrive to grant access to")
     invite_parser.add_argument("remote", nargs="?", default="OneDrive", help="Name of the OneDrive remote (default: OneDrive)")
     
     # Remove command
@@ -436,7 +467,7 @@ def main():
     if args.command == 'list':
         list_item_acl(args.item_path, args.remote)
     elif args.command == 'invite':
-        invite_permission(args.item_path, args.email, args.remote)
+        invite_permission_to_folders(args.email, args.folder_paths, args.remote)
     elif args.command == 'remove':
         remove_permission(args.item_path, args.email, args.remote)
     
