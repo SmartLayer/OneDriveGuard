@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-OneDrive ACL Lister - Using rclone.conf token to access Microsoft Graph API directly.
+OneDrive ACL Manager - Using rclone.conf token to access Microsoft Graph API directly.
 
 This script demonstrates how to:
 1. Read the OAuth token from rclone.conf
 2. Use it to make direct Microsoft Graph API calls
-3. List ACL (Access Control List) for a specific OneDrive item
+3. List, invite, and remove ACL (Access Control List) for a specific OneDrive item
 
 Prerequisites:
 - rclone must be installed and configured with OneDrive remote
@@ -13,15 +13,17 @@ Prerequisites:
 - Valid OAuth token in ~/.config/rclone/rclone.conf
 
 Usage:
-    python acl_demo.py <item_path> [remote_name]
+    python acl_demo.py <command> <item_path> [options]
     
-    item_path: Required. Path to the folder or file in OneDrive (e.g., "Documents", "Documents/file.txt")
-    remote_name: Optional. Name of the OneDrive remote (default: OneDrive)
-
-Example:
-    python acl_demo.py "Documents"
-    python acl_demo.py "Documents/Project" "MyOneDrive"
-    python acl_demo.py "file.txt"
+Commands:
+    list <item_path> [remote_name]     - List ACL for the specified item
+    invite <item_path> <email> [remote_name]  - Send invitation with editing permission (Personal OneDrive)
+    remove <item_path> <email> [remote_name] - Remove all permissions for the email
+    
+Examples:
+    python acl_demo.py list "Documents"
+    python acl_demo.py invite "Documents/Project" amanuensis@weiwu.au
+    python acl_demo.py remove "Documents/Project" amanuensis@weiwu.au "MyOneDrive"
 """
 
 import requests
@@ -77,6 +79,45 @@ def get_access_token(rclone_remote: str = "OneDrive") -> Optional[str]:
     
     return access_token
 
+def get_item_id(item_path: str, access_token: str) -> Optional[str]:
+    """
+    Get the item ID for a given path.
+    
+    Args:
+        item_path: Path to the folder or file in OneDrive
+        access_token: OAuth access token
+        
+    Returns:
+        Item ID if successful, None otherwise
+    """
+    headers = {"Authorization": f"Bearer {access_token}"}
+    url = f"https://graph.microsoft.com/v1.0/me/drive/root:/{item_path}"
+    
+    try:
+        resp = requests.get(url, headers=headers, timeout=30)
+        if resp.status_code != 200:
+            print(f"❌ Failed to get item info: {resp.status_code}")
+            print(f"Response: {resp.text}")
+            return None
+        
+        item_data = resp.json()
+        item_id = item_data.get('id')
+        if not item_id:
+            print("❌ No item ID found in response")
+            return None
+        
+        item_name = item_data.get('name', 'Unknown')
+        item_type = 'folder' if 'folder' in item_data else 'file'
+        print(f"✅ Found {item_type}: {item_name} (ID: {item_id})")
+        return item_id
+        
+    except requests.exceptions.RequestException as e:
+        print(f"❌ Network error: {e}")
+        return None
+    except Exception as e:
+        print(f"❌ Unexpected error: {e}")
+        return None
+
 def list_item_acl(item_path: str, rclone_remote: str = "OneDrive") -> None:
     """
     List ACL (Access Control List) for a specific OneDrive item.
@@ -97,34 +138,17 @@ def list_item_acl(item_path: str, rclone_remote: str = "OneDrive") -> None:
     
     print("✅ Successfully extracted access token from rclone.conf")
     
-    # Make Microsoft Graph API call to get item info
-    headers = {"Authorization": f"Bearer {access_token}"}
+    # Get item ID
+    item_id = get_item_id(item_path, access_token)
+    if not item_id:
+        return
     
-    # Get item by path
-    url = f"https://graph.microsoft.com/v1.0/me/drive/root:/{item_path}"
-    print(f"Getting item info from: {url}")
+    # Get permissions for this item
+    headers = {"Authorization": f"Bearer {access_token}"}
+    permissions_url = f"https://graph.microsoft.com/v1.0/me/drive/items/{item_id}/permissions"
+    print(f"\nGetting ACL from: {permissions_url}")
     
     try:
-        resp = requests.get(url, headers=headers, timeout=30)
-        if resp.status_code != 200:
-            print(f"❌ Failed to get item info: {resp.status_code}")
-            print(f"Response: {resp.text}")
-            return
-        
-        item_data = resp.json()
-        item_id = item_data.get('id')
-        if not item_id:
-            print("❌ No item ID found in response")
-            return
-        
-        item_name = item_data.get('name', 'Unknown')
-        item_type = 'folder' if 'folder' in item_data else 'file'
-        print(f"✅ Found {item_type}: {item_name} (ID: {item_id})")
-        
-        # Now get permissions for this item
-        permissions_url = f"https://graph.microsoft.com/v1.0/me/drive/items/{item_id}/permissions"
-        print(f"\nGetting ACL from: {permissions_url}")
-        
         resp = requests.get(permissions_url, headers=headers, timeout=30)
         print(f"Response Status: {resp.status_code}")
         
@@ -190,17 +214,214 @@ def list_item_acl(item_path: str, rclone_remote: str = "OneDrive") -> None:
     except Exception as e:
         print(f"❌ Unexpected error: {e}")
 
+def invite_permission(item_path: str, email: str, rclone_remote: str = "OneDrive") -> None:
+    """
+    Send invitation with editing permission for a specific email address (Personal OneDrive).
+    
+    Args:
+        item_path: Path to the folder or file in OneDrive
+        email: Email address to send invitation to
+        rclone_remote: Name of the OneDrive remote in rclone.conf
+    """
+    print(f"=== OneDrive ACL Manager - Send Invitation (Personal OneDrive) ===")
+    print(f"Item: {item_path}")
+    print(f"Email: {email}")
+    print(f"Remote: {rclone_remote}")
+    print()
+    
+    # Get access token
+    access_token = get_access_token(rclone_remote)
+    if not access_token:
+        return
+    
+    print("✅ Successfully extracted access token from rclone.conf")
+    
+    # Get item ID
+    item_id = get_item_id(item_path, access_token)
+    if not item_id:
+        return
+    
+    # Send invitation (Personal OneDrive)
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json"
+    }
+    
+    # Send invitation via the invite endpoint (Personal OneDrive)
+    invite_url = f"https://graph.microsoft.com/v1.0/me/drive/items/{item_id}/invite"
+    print(f"\nSending invitation via: {invite_url}")
+    
+    invite_data = {
+        "requireSignIn": True,
+        "roles": ["write"],
+        "recipients": [
+            {
+                "email": email
+            }
+        ],
+        "message": "You have been granted editing access to this item."
+    }
+    
+    print(f"Invitation data: {json.dumps(invite_data, indent=2)}")
+    
+    try:
+        resp = requests.post(invite_url, headers=headers, json=invite_data, timeout=30)
+        print(f"Response Status: {resp.status_code}")
+        
+        if resp.status_code == 200:
+            invite_response = resp.json()
+            print("✅ Successfully sent invitation for editing permission!")
+            
+            # Show invitation details
+            value = invite_response.get('value', [])
+            if value:
+                for invite in value:
+                    print(f"Invitation sent to: {invite.get('grantedTo', {}).get('user', {}).get('email', 'N/A')}")
+                    print(f"Roles: {', '.join(invite.get('roles', []))}")
+                    if invite.get('invitation'):
+                        print(f"Invitation URL: {invite['invitation'].get('inviteUrl', 'N/A')}")
+        elif resp.status_code == 201:
+            permission = resp.json()
+            print("✅ Successfully added editing permission!")
+            print(f"Permission ID: {permission.get('id', 'N/A')}")
+            print(f"Roles: {', '.join(permission.get('roles', []))}")
+            
+            # Show granted user info
+            granted_to = permission.get('grantedTo')
+            if granted_to and granted_to.get('user'):
+                user = granted_to['user']
+                print(f"Granted to: {user.get('displayName', 'N/A')} ({user.get('email', 'N/A')})")
+        elif resp.status_code == 400:
+            print("❌ Bad request - check the email address format")
+            print(f"Response: {resp.text}")
+        elif resp.status_code == 403:
+            print("❌ Access denied - you may not have permission to modify ACL for this item")
+        elif resp.status_code == 404:
+            print("❌ User not found - the email address may not exist in your organisation")
+        else:
+            print(f"❌ Failed to add permission: {resp.status_code}")
+            print(f"Response: {resp.text}")
+            
+    except requests.exceptions.RequestException as e:
+        print(f"❌ Network error: {e}")
+    except Exception as e:
+        print(f"❌ Unexpected error: {e}")
+
+def remove_permission(item_path: str, email: str, rclone_remote: str = "OneDrive") -> None:
+    """
+    Remove all permissions for a specific email address.
+    
+    Args:
+        item_path: Path to the folder or file in OneDrive
+        email: Email address to remove permissions for
+        rclone_remote: Name of the OneDrive remote in rclone.conf
+    """
+    print(f"=== OneDrive ACL Manager - Remove Permission ===")
+    print(f"Item: {item_path}")
+    print(f"Email: {email}")
+    print(f"Remote: {rclone_remote}")
+    print()
+    
+    # Get access token
+    access_token = get_access_token(rclone_remote)
+    if not access_token:
+        return
+    
+    print("✅ Successfully extracted access token from rclone.conf")
+    
+    # Get item ID
+    item_id = get_item_id(item_path, access_token)
+    if not item_id:
+        return
+    
+    # First, get all permissions to find the one for this email
+    headers = {"Authorization": f"Bearer {access_token}"}
+    permissions_url = f"https://graph.microsoft.com/v1.0/me/drive/items/{item_id}/permissions"
+    
+    try:
+        resp = requests.get(permissions_url, headers=headers, timeout=30)
+        if resp.status_code != 200:
+            print(f"❌ Failed to get permissions: {resp.status_code}")
+            print(f"Response: {resp.text}")
+            return
+        
+        permissions_data = resp.json()
+        permissions = permissions_data.get("value", [])
+        
+        # Find permission for the specified email
+        target_permission_id = None
+        for perm in permissions:
+            # Check grantedToIdentities (OneDrive Business)
+            granted_to_identities = perm.get('grantedToIdentities', [])
+            for identity in granted_to_identities:
+                if identity.get('user') and identity['user'].get('email') == email:
+                    target_permission_id = perm.get('id')
+                    break
+            
+            # Check grantedTo (OneDrive Personal)
+            if not target_permission_id:
+                granted_to = perm.get('grantedTo')
+                if granted_to and granted_to.get('user') and granted_to['user'].get('email') == email:
+                    target_permission_id = perm.get('id')
+                    break
+        
+        if not target_permission_id:
+            print(f"❌ No permission found for email: {email}")
+            return
+        
+        print(f"✅ Found permission ID: {target_permission_id}")
+        
+        # Remove the permission
+        delete_url = f"{permissions_url}/{target_permission_id}"
+        print(f"\nRemoving permission via: {delete_url}")
+        
+        resp = requests.delete(delete_url, headers=headers, timeout=30)
+        print(f"Response Status: {resp.status_code}")
+        
+        if resp.status_code == 204:
+            print("✅ Successfully removed all permissions!")
+        elif resp.status_code == 403:
+            print("❌ Access denied - you may not have permission to modify ACL for this item")
+        elif resp.status_code == 404:
+            print("❌ Permission not found - it may have already been removed")
+        else:
+            print(f"❌ Failed to remove permission: {resp.status_code}")
+            print(f"Response: {resp.text}")
+            
+    except requests.exceptions.RequestException as e:
+        print(f"❌ Network error: {e}")
+    except Exception as e:
+        print(f"❌ Unexpected error: {e}")
+
 def main():
     """Main function"""
-    parser = argparse.ArgumentParser(description="List ACL for OneDrive items using rclone.conf token")
-    parser.add_argument("item_path", 
-                       help="Path to the folder or file in OneDrive (e.g., 'Documents', 'Documents/file.txt')")
-    parser.add_argument("remote", nargs="?", default="OneDrive", 
-                       help="Name of the OneDrive remote (default: OneDrive)")
+    parser = argparse.ArgumentParser(description="Manage ACL for OneDrive items using rclone.conf token")
+    subparsers = parser.add_subparsers(dest='command', help='Available commands')
+    
+    # List command
+    list_parser = subparsers.add_parser('list', help='List ACL for the specified item')
+    list_parser.add_argument("item_path", help="Path to the folder or file in OneDrive")
+    list_parser.add_argument("remote", nargs="?", default="OneDrive", help="Name of the OneDrive remote (default: OneDrive)")
+    
+    # Invite command
+    invite_parser = subparsers.add_parser('invite', help='Send invitation with editing permission (Personal OneDrive)')
+    invite_parser.add_argument("item_path", help="Path to the folder or file in OneDrive")
+    invite_parser.add_argument("email", help="Email address to send invitation to")
+    invite_parser.add_argument("remote", nargs="?", default="OneDrive", help="Name of the OneDrive remote (default: OneDrive)")
+    
+    # Remove command
+    remove_parser = subparsers.add_parser('remove', help='Remove all permissions for the email')
+    remove_parser.add_argument("item_path", help="Path to the folder or file in OneDrive")
+    remove_parser.add_argument("email", help="Email address to remove permissions for")
+    remove_parser.add_argument("remote", nargs="?", default="OneDrive", help="Name of the OneDrive remote (default: OneDrive)")
     
     args = parser.parse_args()
     
-    print("OneDrive ACL Lister")
+    if not args.command:
+        parser.print_help()
+        return
+    
+    print("OneDrive ACL Manager")
     print("=" * 50)
     
     # Check if requests is available
@@ -211,10 +432,15 @@ def main():
         print("Please install it: pip install requests")
         return
     
-    # List ACL for the specified item
-    list_item_acl(args.item_path, args.remote)
+    # Execute the appropriate command
+    if args.command == 'list':
+        list_item_acl(args.item_path, args.remote)
+    elif args.command == 'invite':
+        invite_permission(args.item_path, args.email, args.remote)
+    elif args.command == 'remove':
+        remove_permission(args.item_path, args.email, args.remote)
     
-    print("\n=== ACL Listing Complete ===")
+    print("\n=== ACL Management Complete ===")
     print("This demonstrates direct access to OneDrive ACL via Microsoft Graph API")
     print("using the OAuth token from rclone.conf.")
 
