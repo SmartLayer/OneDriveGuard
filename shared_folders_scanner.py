@@ -164,121 +164,175 @@ def method_search_with_permissions(access_token: str, max_results: int = 1000) -
     """
     Method 1: Use Graph search to find folders and check their permissions.
     This is the most efficient method for finding shared folders.
+    Now includes recursive traversal of all folders.
     """
     print("🔍 Using Graph Search method to find shared folders...")
     
     headers = {"Authorization": f"Bearer {access_token}"}
     shared_folders = []
+    checked_folders = set()  # Track checked folders to avoid duplicates
     
-    # Get root children to find folders
-    root_url = "https://graph.microsoft.com/v1.0/me/drive/root/children"
-    
-    try:
-        resp = requests.get(f"{root_url}?$top={min(max_results, 1000)}", headers=headers, timeout=60)
-        if resp.status_code != 200:
-            print(f"⚠️  Failed to get root children: {resp.status_code}")
-            return shared_folders
+    def check_folder_recursive(folder_id: str, folder_path: str = "", max_depth: int = 10, current_depth: int = 0):
+        """Recursively check a folder and all its subfolders for sharing."""
+        if current_depth >= max_depth or folder_id in checked_folders:
+            return
         
-        root_data = resp.json()
-        items = root_data.get("value", [])
+        checked_folders.add(folder_id)
         
-        print(f"📂 Found {len(items)} items in root to check for sharing...")
-        
-        # Check permissions for each folder
-        checked_count = 0
-        for item in items:
-            if 'folder' not in item:
-                continue
-            
-            checked_count += 1
-            if checked_count % 50 == 0:
-                print(f"   Checked {checked_count}/{len(items)} folders...")
-            
-            item_id = item.get('id')
-            item_name = item.get('name', 'Unknown')
-            
+        try:
             # Get permissions for this folder
-            permissions_url = f"https://graph.microsoft.com/v1.0/me/drive/items/{item_id}/permissions"
-            try:
-                perm_resp = requests.get(permissions_url, headers=headers, timeout=30)
-                if perm_resp.status_code == 200:
-                    permissions_data = perm_resp.json()
-                    permissions = permissions_data.get("value", [])
-                    
-                    # Analyze permissions
-                    has_link, has_direct, perm_count, shared_users = analyze_permissions(permissions)
-                    
-                    if has_link or has_direct:
-                        # Get full path
-                        item_path = get_item_path(item_id, access_token)
-                        
-                        # Determine symbol and sharing type
-                        if has_link:
-                            symbol = "🔗"
-                            share_type = "Link sharing"
-                        else:
-                            symbol = "👥"
-                            share_type = "Direct permissions"
-                        
-                        shared_folders.append({
-                            'path': item_path,
-                            'name': item_name,
-                            'id': item_id,
-                            'symbol': symbol,
-                            'share_type': share_type,
-                            'has_link_sharing': has_link,
-                            'has_direct_sharing': has_direct,
-                            'permission_count': perm_count,
-                            'shared_users': shared_users
-                        })
-                        
-                        print(f"   ✅ Found shared: {symbol} {item_path}")
+            permissions_url = f"https://graph.microsoft.com/v1.0/me/drive/items/{folder_id}/permissions"
+            perm_resp = requests.get(permissions_url, headers=headers, timeout=30)
+            
+            if perm_resp.status_code == 200:
+                permissions_data = perm_resp.json()
+                permissions = permissions_data.get("value", [])
                 
-            except Exception as e:
-                # Skip folders we can't access
-                continue
+                # Analyze permissions
+                has_link, has_direct, perm_count, shared_users = analyze_permissions(permissions)
+                
+                if has_link or has_direct:
+                    # Get full path if not already provided
+                    if not folder_path:
+                        folder_path = get_item_path(folder_id, access_token)
+                    
+                    # Get folder name
+                    folder_info_url = f"https://graph.microsoft.com/v1.0/me/drive/items/{folder_id}"
+                    info_resp = requests.get(folder_info_url, headers=headers, timeout=30)
+                    folder_name = "Unknown"
+                    if info_resp.status_code == 200:
+                        folder_data = info_resp.json()
+                        folder_name = folder_data.get('name', 'Unknown')
+                    
+                    # Determine symbol and sharing type
+                    if has_link:
+                        symbol = "🔗"
+                        share_type = "Link sharing"
+                    else:
+                        symbol = "👥"
+                        share_type = "Direct permissions"
+                    
+                    shared_folders.append({
+                        'path': folder_path,
+                        'name': folder_name,
+                        'id': folder_id,
+                        'symbol': symbol,
+                        'share_type': share_type,
+                        'has_link_sharing': has_link,
+                        'has_direct_sharing': has_direct,
+                        'permission_count': perm_count,
+                        'shared_users': shared_users
+                    })
+                    
+                    print(f"   ✅ Found shared: {symbol} {folder_path}")
+            
+            # Get children of this folder and recursively check them
+            children_url = f"https://graph.microsoft.com/v1.0/me/drive/items/{folder_id}/children"
+            children_resp = requests.get(children_url, headers=headers, timeout=30)
+            
+            if children_resp.status_code == 200:
+                children_data = children_resp.json()
+                children = children_data.get("value", [])
+                
+                for child in children:
+                    if 'folder' in child:
+                        child_id = child.get('id')
+                        child_name = child.get('name', 'Unknown')
+                        child_path = f"{folder_path}/{child_name}" if folder_path else child_name
+                        
+                        # Recursively check this child folder
+                        check_folder_recursive(child_id, child_path, max_depth, current_depth + 1)
+        
+        except Exception as e:
+            # Skip folders we can't access
+            pass
+    
+    # Start from root
+    try:
+        root_url = "https://graph.microsoft.com/v1.0/me/drive/root"
+        resp = requests.get(root_url, headers=headers, timeout=30)
+        
+        if resp.status_code == 200:
+            root_data = resp.json()
+            root_id = root_data.get('id')
+            
+            print(f"📂 Starting recursive search from root...")
+            check_folder_recursive(root_id, "", max_depth=10, current_depth=0)
+        else:
+            print(f"⚠️  Failed to get root: {resp.status_code}")
+            return shared_folders
     
     except Exception as e:
         print(f"❌ Search error: {e}")
     
     print(f"✅ Search method complete. Found {len(shared_folders)} shared folders.")
+    print(f"   Checked {len(checked_folders)} total folders recursively.")
     return shared_folders
 
 def method_delta_query(access_token: str, max_results: int = 1000) -> List[Dict]:
     """
     Method 2: Use delta query to get all drive changes and check permissions.
-    Less efficient but more comprehensive.
+    More comprehensive - gets ALL items in the drive recursively.
     """
     print("🔄 Using Delta Query method to find shared folders...")
     
     headers = {"Authorization": f"Bearer {access_token}"}
     shared_folders = []
+    checked_folders = set()
     
-    # Start delta query from root
+    # Start delta query from root - get ALL items without artificial limits
     delta_url = "https://graph.microsoft.com/v1.0/me/drive/root/delta"
     
     try:
-        resp = requests.get(f"{delta_url}?$top={min(max_results, 1000)}", headers=headers, timeout=60)
-        if resp.status_code != 200:
-            print(f"⚠️  Delta query failed: {resp.status_code}")
-            return shared_folders
+        all_items = []
+        next_link = delta_url
         
-        delta_data = resp.json()
-        items = delta_data.get("value", [])
+        print("📂 Collecting all items via delta query (this may take a while)...")
         
-        print(f"📂 Delta query returned {len(items)} items to check...")
+        # Collect all items using pagination
+        while next_link and len(all_items) < max_results:
+            if next_link == delta_url:
+                # First request
+                resp = requests.get(f"{delta_url}?$top=1000", headers=headers, timeout=60)
+            else:
+                # Subsequent requests
+                resp = requests.get(next_link, headers=headers, timeout=60)
+            
+            if resp.status_code != 200:
+                print(f"⚠️  Delta query failed: {resp.status_code}")
+                break
+            
+            delta_data = resp.json()
+            items = delta_data.get("value", [])
+            all_items.extend(items)
+            
+            print(f"   Collected {len(all_items)} items so far...")
+            
+            # Get next page link
+            next_link = delta_data.get("@odata.nextLink")
+            
+            # Small delay to avoid rate limiting
+            time.sleep(0.1)
         
+        print(f"📂 Delta query returned {len(all_items)} total items to check...")
+        
+        # Filter for folders only and check permissions
         checked_count = 0
-        for item in items:
-            # Only check folders
+        for item in all_items:
+            # Only check folders that aren't deleted
             if 'folder' not in item or item.get('deleted'):
                 continue
             
+            item_id = item.get('id')
+            if item_id in checked_folders:
+                continue
+            
+            checked_folders.add(item_id)
             checked_count += 1
-            if checked_count % 25 == 0:
+            
+            if checked_count % 50 == 0:
                 print(f"   Checked {checked_count} folders...")
             
-            item_id = item.get('id')
             item_name = item.get('name', 'Unknown')
             
             # Get permissions
@@ -318,6 +372,7 @@ def method_delta_query(access_token: str, max_results: int = 1000) -> List[Dict]
         print(f"❌ Delta query error: {e}")
     
     print(f"✅ Delta method complete. Found {len(shared_folders)} shared folders.")
+    print(f"   Checked {len(checked_folders)} total folders from delta query.")
     return shared_folders
 
 def method_fallback_selective(access_token: str, max_results: int = 1000) -> List[Dict]:
