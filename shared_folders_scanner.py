@@ -36,48 +36,13 @@ import requests
 import json
 import sys
 import argparse
-import configparser
 import os
 from typing import Dict, List, Optional, Set, Tuple
 from urllib.parse import quote
 import time
+from config_utils import get_access_token
 
-def get_access_token(rclone_remote: str = "OneDrive") -> Optional[str]:
-    """Extract access token from rclone.conf for the specified remote."""
-    conf_path = os.path.expanduser("~/.config/rclone/rclone.conf")
-    if not os.path.exists(conf_path):
-        print(f"Error: rclone config not found at {conf_path}")
-        print("Please configure rclone first: rclone config")
-        return None
-    
-    config = configparser.ConfigParser()
-    config.read(conf_path)
-    
-    if rclone_remote not in config:
-        print(f"Error: Remote '{rclone_remote}' not found in {conf_path}")
-        print(f"Available remotes: {list(config.sections())}")
-        return None
-    
-    section = config[rclone_remote]
-    token_json = section.get("token")
-    if not token_json:
-        print(f"Error: No token found for remote '{rclone_remote}' in {conf_path}")
-        print("Please authenticate first: rclone authorize onedrive")
-        return None
-    
-    try:
-        token = json.loads(token_json)
-    except Exception as e:
-        print(f"Error: Could not parse token JSON: {e}")
-        return None
-    
-    access_token = token.get("access_token")
-    if not access_token:
-        print("Error: No access_token in token JSON")
-        print("Token may be expired. Please re-authenticate: rclone authorize onedrive")
-        return None
-    
-    return access_token
+
 
 
 
@@ -196,39 +161,57 @@ def scan_shared_folders_recursive(access_token: str, max_results: int = 1000, ta
                 has_link, has_direct, perm_count, shared_users = analyze_permissions(permissions)
                 
                 if has_link or has_direct:
-                    # Get full path if not already provided
-                    if not folder_path:
-                        folder_path = get_item_path(folder_id, access_token)
-                    
-                    # Get folder name
-                    folder_info_url = f"https://graph.microsoft.com/v1.0/me/drive/items/{folder_id}"
-                    info_resp = requests.get(folder_info_url, headers=headers, timeout=30)
-                    folder_name = "Unknown"
-                    if info_resp.status_code == 200:
-                        folder_data = info_resp.json()
-                        folder_name = folder_data.get('name', 'Unknown')
-                    
-                    # Determine symbol and sharing type
-                    if has_link:
-                        symbol = "🔗"
-                        share_type = "Link sharing"
+                    # Validate that shared_users is not empty
+                    if not shared_users:
+                        print(f"   ❌ ERROR: Folder '{folder_path or folder_id}' has sharing enabled but empty shared_users list!")
+                        print(f"   This indicates a bug in the permission analysis logic.")
                     else:
-                        symbol = "👥"
-                        share_type = "Direct permissions"
-                    
-                    shared_folders.append({
-                        'path': folder_path,
-                        'name': folder_name,
-                        'id': folder_id,
-                        'symbol': symbol,
-                        'share_type': share_type,
-                        'has_link_sharing': has_link,
-                        'has_direct_sharing': has_direct,
-                        'permission_count': perm_count,
-                        'shared_users': shared_users
-                    })
-                    
-                    print(f"   ✅ Found shared: {symbol} {folder_path}")
+                        # Get full path if not already provided
+                        if not folder_path:
+                            folder_path = get_item_path(folder_id, access_token)
+                        
+                        # Get folder name
+                        folder_info_url = f"https://graph.microsoft.com/v1.0/me/drive/items/{folder_id}"
+                        info_resp = requests.get(folder_info_url, headers=headers, timeout=30)
+                        folder_name = "Unknown"
+                        if info_resp.status_code == 200:
+                            folder_data = info_resp.json()
+                            folder_name = folder_data.get('name', 'Unknown')
+                        
+                        # Determine symbol and sharing type
+                        if has_link:
+                            symbol = "🔗"
+                            share_type = "Link sharing"
+                        else:
+                            symbol = "👥"
+                            share_type = "Direct permissions"
+                        
+                        # Get the folder ID by path to ensure consistency
+                        consistent_folder_id = folder_id
+                        if folder_path:
+                            try:
+                                path_url = f"https://graph.microsoft.com/v1.0/me/drive/root:/{folder_path}"
+                                path_resp = requests.get(path_url, headers=headers, timeout=30)
+                                if path_resp.status_code == 200:
+                                    path_data = path_resp.json()
+                                    consistent_folder_id = path_data.get('id', folder_id)
+                            except Exception:
+                                # Fall back to original folder_id if path lookup fails
+                                consistent_folder_id = folder_id
+                        
+                        shared_folders.append({
+                            'path': folder_path,
+                            'name': folder_name,
+                            'id': consistent_folder_id,
+                            'symbol': symbol,
+                            'share_type': share_type,
+                            'has_link_sharing': has_link,
+                            'has_direct_sharing': has_direct,
+                            'permission_count': perm_count,
+                            'shared_users': shared_users
+                        })
+                        
+                        print(f"   ✅ Found shared: {symbol} {folder_path}")
             
             # Get children of this folder and recursively check them
             children_url = f"https://graph.microsoft.com/v1.0/me/drive/items/{folder_id}/children"
@@ -373,7 +356,7 @@ def filter_folders_by_user(shared_folders: List[Dict], target_user: str, access_
     
     return filtered_folders
 
-def scan_shared_folders(rclone_remote: str = "OneDrive", max_results: int = 1000, target_dir: Optional[str] = None, only_user: Optional[str] = None) -> None:
+def scan_shared_folders(rclone_remote: Optional[str] = None, max_results: int = 1000, target_dir: Optional[str] = None, only_user: Optional[str] = None, json_output: bool = False) -> None:
     """
     Scan OneDrive for all shared folders by recursively traversing the folder structure.
     
@@ -382,6 +365,7 @@ def scan_shared_folders(rclone_remote: str = "OneDrive", max_results: int = 1000
         max_results: Maximum number of results to return
         target_dir: Optional directory path to scan under
         only_user: Optional email to filter results by user
+        json_output: If True, output detailed JSON instead of formatted text
     """
     print(f"=== OneDrive Shared Folders Scanner ===")
     print(f"Remote: {rclone_remote}")
@@ -390,6 +374,8 @@ def scan_shared_folders(rclone_remote: str = "OneDrive", max_results: int = 1000
         print(f"Target directory: {target_dir}")
     if only_user:
         print(f"Filtering by user: {only_user}")
+    if json_output:
+        print(f"Output format: JSON")
     print()
     
     # Get access token
@@ -416,22 +402,51 @@ def scan_shared_folders(rclone_remote: str = "OneDrive", max_results: int = 1000
     
     # Display results
     if shared_folders:
-        print(f"📁 Found {len(shared_folders)} shared folder(s) in {scan_time:.1f} seconds:")
-        print("=" * 80)
-        
-        for folder in shared_folders:
-            print(f"{folder['symbol']} {folder['path']}")
-            print(f"   └─ {folder['share_type']} ({folder['permission_count']} permission(s))")
+        if json_output:
+            # Output detailed JSON for debugging
+            output_data = {
+                "scan_info": {
+                    "scan_time_seconds": round(scan_time, 1),
+                    "total_folders_found": len(shared_folders),
+                    "target_user": only_user,
+                    "target_directory": target_dir
+                },
+                "folders": []
+            }
             
-            if folder['shared_users']:
-                users_str = ', '.join(folder['shared_users'][:3])
-                if len(folder['shared_users']) > 3:
-                    users_str += f" and {len(folder['shared_users']) - 3} more"
-                print(f"   └─ Shared with: {users_str}")
+            for folder in shared_folders:
+                folder_data = {
+                    "path": folder['path'],
+                    "name": folder['name'],
+                    "id": folder['id'],
+                    "symbol": folder['symbol'],
+                    "share_type": folder['share_type'],
+                    "has_link_sharing": folder['has_link_sharing'],
+                    "has_direct_sharing": folder['has_direct_sharing'],
+                    "permission_count": folder['permission_count'],
+                    "shared_users": folder['shared_users'],
+                    "permissions": get_detailed_permissions(folder['id'], access_token)
+                }
+                output_data["folders"].append(folder_data)
             
-            if folder['has_link_sharing'] and folder['has_direct_sharing']:
-                print(f"   └─ Has both link sharing and direct permissions")
-            print()
+            print(json.dumps(output_data, indent=2))
+        else:
+            print(f"📁 Found {len(shared_folders)} shared folder(s) in {scan_time:.1f} seconds:")
+            print("=" * 80)
+            
+            for folder in shared_folders:
+                print(f"{folder['symbol']} {folder['path']}")
+                print(f"   └─ {folder['share_type']} ({folder['permission_count']} permission(s))")
+                
+                if folder['shared_users']:
+                    users_str = ', '.join(folder['shared_users'][:3])
+                    if len(folder['shared_users']) > 3:
+                        users_str += f" and {len(folder['shared_users']) - 3} more"
+                    print(f"   └─ Shared with: {users_str}")
+                
+                if folder['has_link_sharing'] and folder['has_direct_sharing']:
+                    print(f"   └─ Has both link sharing and direct permissions")
+                print()
     else:
         print(f"ℹ️  No shared folders found in {scan_time:.1f} seconds")
         if only_user:
@@ -447,15 +462,47 @@ def scan_shared_folders(rclone_remote: str = "OneDrive", max_results: int = 1000
     print("\n=== Scan Complete ===")
     print("💡 Tip: This recursive scan efficiently checks all folders in your OneDrive!")
 
+def get_detailed_permissions(folder_id: str, access_token: str) -> List[Dict]:
+    """Get detailed permissions for a folder including explicit vs inherited status."""
+    headers = {"Authorization": f"Bearer {access_token}"}
+    detailed_permissions = []
+    
+    try:
+        permissions_url = f"https://graph.microsoft.com/v1.0/me/drive/items/{folder_id}/permissions"
+        perm_resp = requests.get(permissions_url, headers=headers, timeout=30)
+        
+        if perm_resp.status_code == 200:
+            permissions_data = perm_resp.json()
+            permissions = permissions_data.get("value", [])
+            
+            for perm in permissions:
+                perm_detail = {
+                    "roles": perm.get('roles', []),
+                    "inherited_from": perm.get('inheritedFrom'),
+                    "is_explicit": perm.get('inheritedFrom') is None,
+                    "granted_to": perm.get('grantedTo'),
+                    "granted_to_identities": perm.get('grantedToIdentities', []),
+                    "link": perm.get('link')
+                }
+                detailed_permissions.append(perm_detail)
+    
+    except Exception as e:
+        # Return error info instead of failing
+        detailed_permissions.append({"error": str(e)})
+    
+    return detailed_permissions
+
 def main():
     """Main function"""
     parser = argparse.ArgumentParser(description="Scan OneDrive for shared folders")
-    parser.add_argument("--remote", default="OneDrive", 
-                       help="Name of the OneDrive remote (default: OneDrive)")
+    parser.add_argument("--remote", default=None, 
+                       help="Name of the OneDrive remote (default: auto-detect)")
     parser.add_argument("--max-results", type=int, default=1000,
                        help="Maximum results to return (default: 1000)")
     parser.add_argument("--only-user", 
                        help="Filter to show only folders shared with specific user (email)")
+    parser.add_argument("--json-output", action="store_true",
+                       help="Output results in JSON format for debugging")
     parser.add_argument("dirname", nargs="?", 
                        help="Optional: scan only under this directory path")
     
@@ -473,7 +520,7 @@ def main():
         return
     
     # Execute the scan
-    scan_shared_folders(args.remote, args.max_results, args.dirname, args.only_user)
+    scan_shared_folders(args.remote, args.max_results, args.dirname, args.only_user, args.json_output)
 
 if __name__ == "__main__":
     main()

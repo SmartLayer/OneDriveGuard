@@ -30,54 +30,11 @@ import requests
 import json
 import sys
 import argparse
-import configparser
 import os
 from typing import Dict, List, Optional
+from config_utils import get_access_token
 
-def get_access_token(rclone_remote: str = "OneDrive") -> Optional[str]:
-    """
-    Extract access token from rclone.conf for the specified remote.
-    
-    Args:
-        rclone_remote: Name of the OneDrive remote in rclone.conf
-        
-    Returns:
-        Access token string if successful, None otherwise
-    """
-    conf_path = os.path.expanduser("~/.config/rclone/rclone.conf")
-    if not os.path.exists(conf_path):
-        print(f"Error: rclone config not found at {conf_path}")
-        print("Please configure rclone first: rclone config")
-        return None
-    
-    config = configparser.ConfigParser()
-    config.read(conf_path)
-    
-    if rclone_remote not in config:
-        print(f"Error: Remote '{rclone_remote}' not found in {conf_path}")
-        print(f"Available remotes: {list(config.sections())}")
-        return None
-    
-    section = config[rclone_remote]
-    token_json = section.get("token")
-    if not token_json:
-        print(f"Error: No token found for remote '{rclone_remote}' in {conf_path}")
-        print("Please authenticate first: rclone authorize onedrive")
-        return None
-    
-    try:
-        token = json.loads(token_json)
-    except Exception as e:
-        print(f"Error: Could not parse token JSON: {e}")
-        return None
-    
-    access_token = token.get("access_token")
-    if not access_token:
-        print("Error: No access_token in token JSON")
-        print("Token may be expired. Please re-authenticate: rclone authorize onedrive")
-        return None
-    
-    return access_token
+
 
 def get_item_id(item_path: str, access_token: str) -> Optional[str]:
     """
@@ -424,6 +381,95 @@ def remove_permission(item_path: str, email: str, rclone_remote: str = "OneDrive
     except Exception as e:
         print(f"❌ Unexpected error: {e}")
 
+def strip_explicit_permissions(item_path: str, rclone_remote: str = "OneDrive") -> None:
+    """
+    Remove all explicit (non-inherited, non-owner) permissions from a OneDrive item.
+    Leaves only inherited permissions (or none if no inherited ACL).
+    
+    Args:
+        item_path: Path to the folder or file in OneDrive
+        rclone_remote: Name of the OneDrive remote in rclone.conf
+    """
+    print(f"=== OneDrive ACL Manager - Strip Explicit Permissions ===")
+    print(f"Item: {item_path}")
+    print(f"Remote: {rclone_remote}")
+    print()
+
+    # Get access token
+    access_token = get_access_token(rclone_remote)
+    if not access_token:
+        return
+
+    print("✅ Successfully extracted access token from rclone.conf")
+
+    # Get item ID
+    item_id = get_item_id(item_path, access_token)
+    if not item_id:
+        return
+
+    # Get permissions for this item
+    headers = {"Authorization": f"Bearer {access_token}"}
+    permissions_url = f"https://graph.microsoft.com/v1.0/me/drive/items/{item_id}/permissions"
+    print(f"\nGetting ACL from: {permissions_url}")
+
+    try:
+        resp = requests.get(permissions_url, headers=headers, timeout=30)
+        if resp.status_code != 200:
+            print(f"❌ Failed to get permissions: {resp.status_code}")
+            print(f"Response: {resp.text}")
+            return
+
+        permissions_data = resp.json()
+        permissions = permissions_data.get("value", [])
+        to_remove = []
+        for perm in permissions:
+            # Skip owner permissions
+            roles = perm.get('roles', [])
+            if 'owner' in roles:
+                continue
+            # Skip inherited permissions
+            if perm.get('inheritedFrom'):
+                continue
+            # Otherwise, this is explicit and should be removed
+            to_remove.append(perm.get('id'))
+
+        if not to_remove:
+            print("ℹ️  No explicit permissions to remove (only inherited or owner permissions present)")
+            return
+
+        print(f"Found {len(to_remove)} explicit permission(s) to remove.")
+        removed = 0
+        for perm_id in to_remove:
+            delete_url = f"{permissions_url}/{perm_id}"
+            print(f"Removing permission ID: {perm_id} via {delete_url}")
+            del_resp = requests.delete(delete_url, headers=headers, timeout=30)
+            if del_resp.status_code == 204:
+                print(f"✅ Removed permission ID: {perm_id}")
+                removed += 1
+            elif del_resp.status_code == 403:
+                print(f"❌ Access denied when removing permission ID: {perm_id}")
+            elif del_resp.status_code == 404:
+                print(f"❌ Permission ID {perm_id} not found (may have already been removed)")
+            else:
+                print(f"❌ Failed to remove permission ID {perm_id}: {del_resp.status_code}")
+                print(f"Response: {del_resp.text}")
+
+        print(f"\n=== Strip Summary ===")
+        print(f"Total explicit permissions removed: {removed}")
+        # List remaining permissions
+        resp2 = requests.get(permissions_url, headers=headers, timeout=30)
+        if resp2.status_code == 200:
+            remaining = resp2.json().get("value", [])
+            print(f"Remaining permissions ({len(remaining)}):")
+            for i, perm in enumerate(remaining, 1):
+                print(f"  {i}. ID: {perm.get('id', 'N/A')}, Roles: {', '.join(perm.get('roles', []))}, Inherited: {'Yes' if perm.get('inheritedFrom') else 'No'}")
+        else:
+            print(f"Could not fetch remaining permissions: {resp2.status_code}")
+    except requests.exceptions.RequestException as e:
+        print(f"❌ Network error: {e}")
+    except Exception as e:
+        print(f"❌ Unexpected error: {e}")
+
 def main():
     """Main function"""
     parser = argparse.ArgumentParser(description="Manage ACL for OneDrive items using rclone.conf token")
@@ -432,19 +478,24 @@ def main():
     # List command
     list_parser = subparsers.add_parser('list', help='List ACL for the specified item')
     list_parser.add_argument("item_path", help="Path to the folder or file in OneDrive")
-    list_parser.add_argument("remote", nargs="?", default="OneDrive", help="Name of the OneDrive remote (default: OneDrive)")
+    list_parser.add_argument("remote", nargs="?", default=None, help="Name of the OneDrive remote (default: auto-detect)")
     
     # Invite command
     invite_parser = subparsers.add_parser('invite', help='Send invitation with editing permission to multiple folders (Personal OneDrive)')
     invite_parser.add_argument("email", help="Email address to send invitation to")
     invite_parser.add_argument("folder_paths", nargs="+", help="One or more folder paths in OneDrive to grant access to")
-    invite_parser.add_argument("remote", nargs="?", default="OneDrive", help="Name of the OneDrive remote (default: OneDrive)")
+    invite_parser.add_argument("remote", nargs="?", default=None, help="Name of the OneDrive remote (default: auto-detect)")
     
     # Remove command
     remove_parser = subparsers.add_parser('remove', help='Remove all permissions for the email')
     remove_parser.add_argument("item_path", help="Path to the folder or file in OneDrive")
     remove_parser.add_argument("email", help="Email address to remove permissions for")
-    remove_parser.add_argument("remote", nargs="?", default="OneDrive", help="Name of the OneDrive remote (default: OneDrive)")
+    remove_parser.add_argument("remote", nargs="?", default=None, help="Name of the OneDrive remote (default: auto-detect)")
+
+    # Strip command
+    strip_parser = subparsers.add_parser('strip', help='Remove all explicit (non-inherited) permissions from the item')
+    strip_parser.add_argument("item_path", help="Path to the folder or file in OneDrive")
+    strip_parser.add_argument("remote", nargs="?", default=None, help="Name of the OneDrive remote (default: auto-detect)")
     
     args = parser.parse_args()
     
@@ -470,6 +521,8 @@ def main():
         invite_permission_to_folders(args.email, args.folder_paths, args.remote)
     elif args.command == 'remove':
         remove_permission(args.item_path, args.email, args.remote)
+    elif args.command == 'strip':
+        strip_explicit_permissions(args.item_path, args.remote)
     
     print("\n=== ACL Management Complete ===")
     print("This demonstrates direct access to OneDrive ACL via Microsoft Graph API")
