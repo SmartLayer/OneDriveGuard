@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-OneDrive Shared Folders Scanner - Find folders shared by you using Graph API.
+OneDrive ACL Scanner - Find folders with ACL permissions using Graph API.
 
-This script efficiently finds all shared folders in your OneDrive by recursively
-traversing the entire folder structure and checking permissions for each folder.
+This script efficiently finds all folders in your OneDrive that have ACL permissions
+by recursively traversing the entire folder structure and checking permissions for each folder.
 
 Distinguished sharing types:
 - 🔗 Folders shared via link
@@ -15,7 +15,7 @@ Prerequisites:
 - Valid OAuth token in ~/.config/rclone/rclone.conf
 
 Usage:
-    python shared_folders_scanner.py [options] [dirname]
+    python -m src.acl_scanner [options] [dirname]
     
 Options:
     --remote REMOTE_NAME    OneDrive remote name (default: OneDrive)
@@ -24,12 +24,12 @@ Options:
     dirname                 Optional: scan only under this directory path
     
 Examples:
-    python shared_folders_scanner.py
-    python shared_folders_scanner.py "Documents/Projects"
-    python shared_folders_scanner.py --only-user "user@example.com"
-    python shared_folders_scanner.py --only-user "user@example.com" "Work"
-    python shared_folders_scanner.py --max-results 500
-    python shared_folders_scanner.py --remote "MyOneDrive"
+    python -m src.acl_scanner
+    python -m src.acl_scanner "Documents/Projects"
+    python -m src.acl_scanner --only-user "user@example.com"
+    python -m src.acl_scanner --only-user "user@example.com" "Work"
+    python -m src.acl_scanner --max-results 500
+    python -m src.acl_scanner --remote "MyOneDrive"
 """
 
 import requests
@@ -40,7 +40,7 @@ import os
 from typing import Dict, List, Optional, Set, Tuple
 from urllib.parse import quote
 import time
-from config_utils import get_access_token
+from .config_utils import get_access_token
 
 
 

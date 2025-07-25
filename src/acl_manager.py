@@ -2,10 +2,10 @@
 """
 OneDrive ACL Manager - Using rclone.conf token to access Microsoft Graph API directly.
 
-This script demonstrates how to:
+This script provides comprehensive ACL (Access Control List) management for OneDrive items:
 1. Read the OAuth token from rclone.conf
 2. Use it to make direct Microsoft Graph API calls
-3. List, invite, and remove ACL (Access Control List) for a specific OneDrive item
+3. List, invite, and remove ACL permissions for specific OneDrive items
 
 Prerequisites:
 - rclone must be installed and configured with OneDrive remote
@@ -13,7 +13,7 @@ Prerequisites:
 - Valid OAuth token in ~/.config/rclone/rclone.conf
 
 Usage:
-    python acl_demo.py <command> [options]
+    python -m src.acl_manager <command> [options]
     
 Commands:
     list <item_path> [remote_name]     - List ACL for the specified item
@@ -21,9 +21,9 @@ Commands:
     remove <item_path> <email> [remote_name] - Remove all permissions for the email
     
 Examples:
-    python acl_demo.py list "Documents"
-    python acl_demo.py invite amanuensis@weiwu.au "Documents/Project" "Documents/Shared"
-    python acl_demo.py remove "Documents/Project" amanuensis@weiwu.au "MyOneDrive"
+    python -m src.acl_manager list "Documents"
+    python -m src.acl_manager invite amanuensis@weiwu.au "Documents/Project" "Documents/Shared"
+    python -m src.acl_manager remove "Documents/Project" amanuensis@weiwu.au "MyOneDrive"
 """
 
 import requests
@@ -32,7 +32,7 @@ import sys
 import argparse
 import os
 from typing import Dict, List, Optional
-from config_utils import get_access_token
+from .config_utils import get_access_token
 
 
 

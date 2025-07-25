@@ -1,13 +1,28 @@
-# OneDrive ACL Lister
+# OneDrive ACL Manager
 
-This project provides two implementations of a OneDrive ACL (Access Control List) lister that uses the OAuth token from rclone.conf to access the Microsoft Graph API directly.
+This project provides comprehensive tools for managing Access Control Lists (ACLs) in OneDrive using the Microsoft Graph API with OAuth tokens from rclone configuration.
 
 ## Features
 
-- Reads OAuth tokens from rclone.conf configuration
-- Makes direct Microsoft Graph API calls to retrieve ACL information
-- Displays detailed permission information including users, roles, and link details
-- Supports both OneDrive Personal and OneDrive Business accounts
+- **ACL Management**: List, invite, and remove permissions for OneDrive items
+- **ACL Scanning**: Find all folders with ACL permissions across your OneDrive
+- **Direct API Access**: Uses OAuth tokens from rclone.conf to access Microsoft Graph API directly
+- **Cross-Platform**: Supports both OneDrive Personal and OneDrive Business accounts
+- **Multiple Interfaces**: Python command-line tools and Tcl/Tk GUI
+
+## Project Structure
+
+```
+onedrive-acl/
+├── src/                    # Python source code
+│   ├── __init__.py        # Package initialisation
+│   ├── acl_manager.py     # Main ACL management tool
+│   ├── acl_scanner.py     # ACL scanning and discovery
+│   ├── config_utils.py    # Shared configuration utilities
+│   └── debug_permissions.py # Debug tools for permission analysis
+├── acl_demo.tcl           # Tcl/Tk GUI version
+└── README.md              # This file
+```
 
 ## Prerequisites
 
@@ -62,25 +77,75 @@ This project provides two implementations of a OneDrive ACL (Access Control List
 
 ## Usage
 
-### Python Version
+### ACL Manager (Python)
+
+The main ACL management tool provides comprehensive permission control:
 
 ```bash
-python3 acl_demo.py <item_path> [remote_name]
+python -m src.acl_manager <command> [options]
 ```
+
+**Commands:**
+- `list <item_path> [remote_name]` - List ACL for the specified item
+- `invite <email> <folder_path>... [remote_name]` - Send invitation with editing permission to multiple folders (Personal OneDrive)
+- `remove <item_path> <email> [remote_name]` - Remove all permissions for the email
 
 **Examples:**
 ```bash
 # List ACL for a folder
-python3 acl_demo.py "Documents"
+python -m src.acl_manager list "Documents"
 
 # List ACL for a specific file
-python3 acl_demo.py "Documents/file.txt"
+python -m src.acl_manager list "Documents/file.txt"
 
 # Use a different remote name
-python3 acl_demo.py "Project Files" "MyOneDrive"
+python -m src.acl_manager list "Project Files" "MyOneDrive"
+
+# Invite a user to multiple folders
+python -m src.acl_manager invite amanuensis@weiwu.au "Documents/Project" "Documents/Shared"
+
+# Remove user permissions
+python -m src.acl_manager remove "Documents/Project" amanuensis@weiwu.au "MyOneDrive"
 ```
 
-### Tcl/Tk Version
+### ACL Scanner (Python)
+
+Scan your OneDrive for folders with ACL permissions:
+
+```bash
+python -m src.acl_scanner [options] [dirname]
+```
+
+**Options:**
+- `--remote REMOTE_NAME` - OneDrive remote name (default: OneDrive)
+- `--max-results N` - Maximum results to return (default: 1000)
+- `--only-user EMAIL` - Filter to show only folders shared with specific user
+- `dirname` - Optional: scan only under this directory path
+
+**Examples:**
+```bash
+# Scan all folders for ACL permissions
+python -m src.acl_scanner
+
+# Scan specific directory
+python -m src.acl_scanner "Documents/Projects"
+
+# Filter by user
+python -m src.acl_scanner --only-user "user@example.com"
+
+# Combine filters
+python -m src.acl_scanner --only-user "user@example.com" "Work"
+
+# Limit results
+python -m src.acl_scanner --max-results 500
+
+# Use different remote
+python -m src.acl_scanner --remote "MyOneDrive"
+```
+
+### Tcl/Tk GUI Version
+
+The Tcl/Tk version provides a graphical interface:
 
 ```bash
 tclsh acl_demo.tcl <item_path> [remote_name]
@@ -169,6 +234,8 @@ The scripts use the Microsoft Graph API endpoints:
 
 - **Get Item**: `GET /me/drive/root:/{item-path}`
 - **Get Permissions**: `GET /me/drive/items/{item-id}/permissions`
+- **Create Permission**: `POST /me/drive/items/{item-id}/invite`
+- **Delete Permission**: `DELETE /me/drive/items/{item-id}/permissions/{permission-id}`
 
 The OAuth token is extracted from rclone's configuration file and used directly in API requests, bypassing the need for separate authentication.
 
@@ -177,7 +244,7 @@ The OAuth token is extracted from rclone's configuration file and used directly 
 - The OAuth token is read from rclone.conf and used directly
 - No credentials are stored by these scripts
 - Tokens expire and may need to be refreshed via `rclone authorize onedrive`
-- The scripts only read ACL information; they do not modify permissions
+- The scripts can read, create, and delete ACL information; use with appropriate caution
 
 ## License
 
