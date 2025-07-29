@@ -30,9 +30,9 @@ onedrive-acl/
 - Python 3.6+
 - rclone installed and configured with OneDrive remote
 - `requests` library: `pip install requests`
-- Valid OAuth token in `~/.config/rclone/rclone.conf`. You can get one by
+- Valid OAuth token in `~/.config/rclone/rclone.conf`. Assuming that the relevant section in rclone.conf goes by the name `OneDrive-ACL`, you can get one by
 
-   $ rclone config update OneDrive --onedrive-metadata-permissions write
+   $ rclone config update OneDrive-ACL --onedrive-metadata-permissions write
 
 ### For Tcl/Tk Version
 - Tcl/Tk 8.6+
