@@ -19,11 +19,14 @@ Commands:
     list <item_path> [remote_name]     - List ACL for the specified item
     invite <email> <folder_path>... [remote_name]  - Send invitation with editing permission to multiple folders (Personal OneDrive)
     remove <item_path> <email> [remote_name] - Remove all permissions for the email
+    bulk-remove-user <email> [options] [remote_name] - Find and remove user from all shared folders
     
 Examples:
     python -m src.acl_manager list "Documents"
     python -m src.acl_manager invite amanuensis@weiwu.au "Documents/Project" "Documents/Shared"
     python -m src.acl_manager remove "Documents/Project" amanuensis@weiwu.au "MyOneDrive"
+    python -m src.acl_manager bulk-remove-user marianascbastos@hotmail.com --dry-run
+    python -m src.acl_manager bulk-remove-user marianascbastos@hotmail.com --target-dir "Work"
 """
 
 import requests
@@ -33,6 +36,7 @@ import argparse
 import os
 from typing import Dict, List, Optional
 from .config_utils import get_access_token
+from .acl_scanner import scan_shared_folders_recursive, filter_folders_by_user
 
 
 
@@ -381,6 +385,154 @@ def remove_permission(item_path: str, email: str, rclone_remote: str = "OneDrive
     except Exception as e:
         print(f"❌ Unexpected error: {e}")
 
+def bulk_remove_user_access(email: str, rclone_remote: str = "OneDrive", target_dir: Optional[str] = None, dry_run: bool = False) -> None:
+    """
+    Find all folders shared with a specific user and systematically remove their access.
+    
+    Args:
+        email: Email address to remove access for
+        rclone_remote: Name of the OneDrive remote in rclone.conf
+        target_dir: Optional directory path to limit search scope
+        dry_run: If True, only show what would be removed without actually removing
+    """
+    print(f"=== OneDrive Bulk User Access Removal ===")
+    print(f"Target user: {email}")
+    print(f"Remote: {rclone_remote}")
+    if target_dir:
+        print(f"Search scope: {target_dir}")
+    if dry_run:
+        print("🔍 DRY RUN MODE - No changes will be made")
+    print()
+    
+    # Get access token
+    access_token = get_access_token(rclone_remote)
+    if not access_token:
+        return
+    
+    print("✅ Successfully extracted access token from rclone.conf")
+    
+    # Find all shared folders
+    print("🔍 Scanning for shared folders...")
+    shared_folders = scan_shared_folders_recursive(access_token, max_results=1000, target_dir=target_dir)
+    
+    if not shared_folders:
+        print("ℹ️  No shared folders found")
+        return
+    
+    # Filter to folders shared with the target user
+    print(f"🔍 Finding folders shared with {email}...")
+    user_folders = filter_folders_by_user(shared_folders, email, access_token)
+    
+    if not user_folders:
+        print(f"ℹ️  No folders found shared with {email}")
+        return
+    
+    print(f"\n📋 Found {len(user_folders)} folder(s) shared with {email}:")
+    print("=" * 80)
+    
+    for i, folder in enumerate(user_folders, 1):
+        print(f"{i}. {folder['symbol']} {folder['path']}")
+        print(f"   └─ {folder['share_type']} ({folder['permission_count']} permission(s))")
+    
+    print()
+    
+    if dry_run:
+        print("🔍 DRY RUN - The following folders would have permissions removed:")
+        for folder in user_folders:
+            print(f"   Would remove {email} from: {folder['path']}")
+        print(f"\nTo actually remove permissions, run without --dry-run")
+        return
+    
+    # Confirm before proceeding
+    print(f"⚠️  About to remove {email} from {len(user_folders)} folder(s)")
+    try:
+        confirm = input("Continue? (y/N): ").strip().lower()
+        if confirm not in ['y', 'yes']:
+            print("❌ Operation cancelled")
+            return
+    except KeyboardInterrupt:
+        print("\n❌ Operation cancelled")
+        return
+    
+    # Remove permissions from each folder
+    successful_removals = 0
+    failed_removals = 0
+    
+    print(f"\n🗑️  Removing {email} from folders...")
+    print("=" * 80)
+    
+    for i, folder in enumerate(user_folders, 1):
+        print(f"\n--- Processing folder {i}/{len(user_folders)}: {folder['path']} ---")
+        
+        try:
+            # Get permissions for this folder
+            headers = {"Authorization": f"Bearer {access_token}"}
+            permissions_url = f"https://graph.microsoft.com/v1.0/me/drive/items/{folder['id']}/permissions"
+            
+            resp = requests.get(permissions_url, headers=headers, timeout=30)
+            if resp.status_code != 200:
+                print(f"❌ Failed to get permissions: {resp.status_code}")
+                failed_removals += 1
+                continue
+            
+            permissions_data = resp.json()
+            permissions = permissions_data.get("value", [])
+            
+            # Find permission for the specified email
+            target_permission_id = None
+            for perm in permissions:
+                # Check grantedToIdentities (OneDrive Business)
+                granted_to_identities = perm.get('grantedToIdentities', [])
+                for identity in granted_to_identities:
+                    if identity.get('user') and identity['user'].get('email', '').lower() == email.lower():
+                        target_permission_id = perm.get('id')
+                        break
+                
+                # Check grantedTo (OneDrive Personal)
+                if not target_permission_id:
+                    granted_to = perm.get('grantedTo')
+                    if granted_to and granted_to.get('user') and granted_to['user'].get('email', '').lower() == email.lower():
+                        target_permission_id = perm.get('id')
+                        break
+            
+            if not target_permission_id:
+                print(f"❌ No permission found for {email} (may have been removed already)")
+                failed_removals += 1
+                continue
+            
+            # Remove the permission
+            delete_url = f"{permissions_url}/{target_permission_id}"
+            del_resp = requests.delete(delete_url, headers=headers, timeout=30)
+            
+            if del_resp.status_code == 204:
+                print(f"✅ Successfully removed {email}")
+                successful_removals += 1
+            elif del_resp.status_code == 403:
+                print(f"❌ Access denied - insufficient permissions")
+                failed_removals += 1
+            elif del_resp.status_code == 404:
+                print(f"❌ Permission not found (may have been removed already)")
+                failed_removals += 1
+            else:
+                print(f"❌ Failed to remove permission: {del_resp.status_code}")
+                print(f"Response: {del_resp.text}")
+                failed_removals += 1
+                
+        except Exception as e:
+            print(f"❌ Error processing folder: {e}")
+            failed_removals += 1
+    
+    # Summary
+    print(f"\n=== Bulk Removal Summary ===")
+    print(f"Total folders processed: {len(user_folders)}")
+    print(f"Successful removals: {successful_removals}")
+    print(f"Failed removals: {failed_removals}")
+    
+    if successful_removals > 0:
+        print(f"✅ Successfully removed {email} from {successful_removals} folder(s)")
+    if failed_removals > 0:
+        print(f"❌ Failed to remove {email} from {failed_removals} folder(s)")
+
 def strip_explicit_permissions(item_path: str, rclone_remote: str = "OneDrive") -> None:
     """
     Remove all explicit (non-inherited, non-owner) permissions from a OneDrive item.
@@ -497,6 +649,13 @@ def main():
     strip_parser.add_argument("item_path", help="Path to the folder or file in OneDrive")
     strip_parser.add_argument("remote", nargs="?", default=None, help="Name of the OneDrive remote (default: auto-detect)")
     
+    # Bulk remove user command
+    bulk_remove_parser = subparsers.add_parser('bulk-remove-user', help='Find and remove a user from all shared folders')
+    bulk_remove_parser.add_argument("email", help="Email address to remove from all folders")
+    bulk_remove_parser.add_argument("--target-dir", help="Optional: limit search to this directory")
+    bulk_remove_parser.add_argument("--dry-run", action="store_true", help="Show what would be removed without making changes")
+    bulk_remove_parser.add_argument("remote", nargs="?", default=None, help="Name of the OneDrive remote (default: auto-detect)")
+    
     args = parser.parse_args()
     
     if not args.command:
@@ -523,6 +682,8 @@ def main():
         remove_permission(args.item_path, args.email, args.remote)
     elif args.command == 'strip':
         strip_explicit_permissions(args.item_path, args.remote)
+    elif args.command == 'bulk-remove-user':
+        bulk_remove_user_access(args.email, args.remote, args.target_dir, args.dry_run)
     
     print("\n=== ACL Management Complete ===")
     print("This demonstrates direct access to OneDrive ACL via Microsoft Graph API")

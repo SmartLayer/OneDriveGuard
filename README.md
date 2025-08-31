@@ -13,7 +13,7 @@ This project provides comprehensive tools for managing Access Control Lists (ACL
 ## Project Structure
 
 ```
-onedrive-acl/
+OneDriveGuard/
 ├── src/                    # Python source code
 │   ├── __init__.py        # Package initialisation
 │   ├── acl_manager.py     # Main ACL management tool
@@ -89,6 +89,8 @@ python -m src.acl_manager <command> [options]
 - `list <item_path> [remote_name]` - List ACL for the specified item
 - `invite <email> <folder_path>... [remote_name]` - Send invitation with editing permission to multiple folders (Personal OneDrive)
 - `remove <item_path> <email> [remote_name]` - Remove all permissions for the email
+- `bulk-remove-user <email> [options] [remote_name]` - Find and remove user from all shared folders
+- `strip <item_path> [remote_name]` - Remove all explicit (non-inherited) permissions from the item
 
 **Examples:**
 ```bash
@@ -104,8 +106,18 @@ python -m src.acl_manager list "Project Files" "MyOneDrive"
 # Invite a user to multiple folders
 python -m src.acl_manager invite amanuensis@weiwu.au "Documents/Project" "Documents/Shared"
 
-# Remove user permissions
-python -m src.acl_manager remove "Documents/Project" amanuensis@weiwu.au "MyOneDrive"
+# Remove user permissions from a specific folder
+python -m src.acl_manager remove "Documents/Project" user@example.com "MyOneDrive"
+
+# Find and remove user from ALL shared folders (with dry-run first)
+python -m src.acl_manager bulk-remove-user expired-user@hotmail.com --dry-run
+python -m src.acl_manager bulk-remove-user expired-user@hotmail.com
+
+# Remove user only from folders under a specific directory
+python -m src.acl_manager bulk-remove-user expired-user@hotmail.com --target-dir "Work"
+
+# Strip all explicit permissions from a folder (leave only inherited/owner)
+python -m src.acl_manager strip "Documents/Project"
 ```
 
 ### ACL Scanner (Python)
@@ -208,12 +220,24 @@ Both versions display the following ACL information:
    - Re-authenticate with OneDrive: `rclone authorize onedrive`
    - Check that the remote name matches your configuration
 
-3. **"Access denied"**
+3. **"Token has expired"**
+   Assuming the share is called OneDrive-ACL in rclone configuration:
+   - The simplest fix: run any rclone command to automatically refresh the token:
+     ```bash
+     rclone about OneDrive-ACL:
+     ```
+   - Alternative: Re-authenticate completely:
+     ```bash
+     rclone config
+     # Select "Edit existing remote" → choose your OneDrive remote → follow prompts
+     ```
+
+4. **"Access denied"**
    - Verify you have permission to view the ACL for the specified item
    - Check that the item path is correct
    - Ensure your Microsoft Graph API permissions are sufficient
 
-4. **"Network error"**
+5. **"Network error"**
    - Check your internet connection
    - Verify firewall settings allow HTTPS connections to Microsoft Graph API
 
@@ -243,7 +267,7 @@ The OAuth token is extracted from rclone's configuration file and used directly 
 
 - The OAuth token is read from rclone.conf and used directly
 - No credentials are stored by these scripts
-- Tokens expire and may need to be refreshed via `rclone authorize onedrive`
+- Tokens expire and can be refreshed by running any rclone command (e.g., `rclone about OneDrive-ACL:`)
 - The scripts can read, create, and delete ACL information; use with appropriate caution
 
 ## License
