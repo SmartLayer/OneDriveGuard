@@ -39,6 +39,31 @@ from .config_utils import get_access_token
 from .acl_scanner import scan_shared_folders_recursive, filter_folders_by_user
 
 
+def _handle_api_error(status_code: int, response_text: str, operation: str) -> None:
+    """
+    Handle Microsoft Graph API errors with helpful user guidance.
+    
+    Args:
+        status_code: HTTP status code from the API response
+        response_text: Raw response text from the API
+        operation: Description of what operation failed (for user context)
+    """
+    print(f"❌ Failed to {operation}: {status_code}")
+    
+    if status_code == 401:
+        print("\n🔑 Token expired or invalid")
+        print("Refresh with: rclone config update OneDrive-ACL --onedrive-metadata-permissions write")
+    elif status_code == 403:
+        print("❌ Access denied - you may not have permission for this operation")
+        print("This could be due to:")
+        print("  - Insufficient permissions on the item")
+        print("  - Item is in a shared folder you don't own")
+        print("  - Microsoft Graph API permissions not granted")
+    elif status_code == 404:
+        print("❌ Item not found - check that the path is correct")
+    else:
+        print(f"Response: {response_text}")
+
 
 def get_item_id(item_path: str, access_token: str) -> Optional[str]:
     """
@@ -57,8 +82,7 @@ def get_item_id(item_path: str, access_token: str) -> Optional[str]:
     try:
         resp = requests.get(url, headers=headers, timeout=30)
         if resp.status_code != 200:
-            print(f"❌ Failed to get item info: {resp.status_code}")
-            print(f"Response: {resp.text}")
+            _handle_api_error(resp.status_code, resp.text, "get item info")
             return None
         
         item_data = resp.json()
@@ -159,16 +183,8 @@ def list_item_acl(item_path: str, rclone_remote: str = "OneDrive") -> None:
                     print("-" * 40)
             else:
                 print("ℹ️  No permissions found for this item (empty ACL)")
-                
-        elif resp.status_code == 403:
-            print("❌ Access denied - you may not have permission to view ACL for this item")
-            print("This could be due to:")
-            print("  - Insufficient permissions on the item")
-            print("  - Item is in a shared folder you don't own")
-            print("  - Microsoft Graph API permissions not granted")
         else:
-            print(f"❌ Failed to get ACL: {resp.status_code}")
-            print(f"Response: {resp.text}")
+            _handle_api_error(resp.status_code, resp.text, "get ACL")
             
     except requests.exceptions.RequestException as e:
         print(f"❌ Network error: {e}")
@@ -333,8 +349,7 @@ def remove_permission(item_path: str, email: str, rclone_remote: str = "OneDrive
     try:
         resp = requests.get(permissions_url, headers=headers, timeout=30)
         if resp.status_code != 200:
-            print(f"❌ Failed to get permissions: {resp.status_code}")
-            print(f"Response: {resp.text}")
+            _handle_api_error(resp.status_code, resp.text, "get permissions")
             return
         
         permissions_data = resp.json()
@@ -471,7 +486,7 @@ def bulk_remove_user_access(email: str, rclone_remote: str = "OneDrive", target_
             
             resp = requests.get(permissions_url, headers=headers, timeout=30)
             if resp.status_code != 200:
-                print(f"❌ Failed to get permissions: {resp.status_code}")
+                _handle_api_error(resp.status_code, resp.text, "get permissions")
                 failed_removals += 1
                 continue
             
@@ -567,8 +582,7 @@ def strip_explicit_permissions(item_path: str, rclone_remote: str = "OneDrive") 
     try:
         resp = requests.get(permissions_url, headers=headers, timeout=30)
         if resp.status_code != 200:
-            print(f"❌ Failed to get permissions: {resp.status_code}")
-            print(f"Response: {resp.text}")
+            _handle_api_error(resp.status_code, resp.text, "get permissions")
             return
 
         permissions_data = resp.json()
