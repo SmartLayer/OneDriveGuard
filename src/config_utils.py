@@ -12,6 +12,7 @@ This module provides shared functions for:
 import configparser
 import json
 import os
+from datetime import datetime, timezone
 from typing import Optional, List, Tuple
 
 def find_onedrive_remotes() -> List[str]:
@@ -102,6 +103,35 @@ def get_access_token(rclone_remote: Optional[str] = None) -> Optional[str]:
     except Exception as e:
         print(f"Error: Could not parse token JSON: {e}")
         return None
+    
+    # Check if token is expired
+    expiry_str = token.get("expiry")
+    if expiry_str:
+        try:
+            # Parse the expiry time (format: 2025-07-23T15:50:44.457921153+10:00)
+            expiry_time = datetime.fromisoformat(expiry_str)
+            current_time = datetime.now(timezone.utc)
+            
+            # Convert expiry time to UTC if it has timezone info
+            if expiry_time.tzinfo is not None:
+                expiry_time_utc = expiry_time.astimezone(timezone.utc)
+            else:
+                expiry_time_utc = expiry_time.replace(tzinfo=timezone.utc)
+            
+            if current_time >= expiry_time_utc:
+                print(f"❌ Error: Token has expired!")
+                print(f"   Token expired on: {expiry_time.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+                print(f"   Current time is: {current_time.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+                print()
+                print("To fix this, please refresh your rclone token:")
+                print(f"   rclone config reconnect {rclone_remote}")
+                print("Or re-authenticate completely:")
+                print(f"   rclone config")
+                return None
+                
+        except ValueError as e:
+            print(f"Warning: Could not parse token expiry time '{expiry_str}': {e}")
+            # Continue anyway in case the expiry format is different
     
     access_token = token.get("access_token")
     if not access_token:
