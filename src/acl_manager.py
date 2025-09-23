@@ -17,12 +17,14 @@ Usage:
     
 Commands:
     list <item_path> [remote_name]     - List ACL for the specified item
+    meta <item_path> [remote_name]     - Show metadata (creation date, creator, size, etc.) for the specified item
     invite <email> <folder_path>... [remote_name]  - Send invitation with editing permission to multiple folders (Personal OneDrive)
     remove <item_path> <email> [remote_name] - Remove all permissions for the email
     bulk-remove-user <email> [options] [remote_name] - Find and remove user from all shared folders
     
 Examples:
     python -m src.acl_manager list "Documents"
+    python -m src.acl_manager meta "Documents/Project"
     python -m src.acl_manager invite amanuensis@weiwu.au "Documents/Project" "Documents/Shared"
     python -m src.acl_manager remove "Documents/Project" amanuensis@weiwu.au "MyOneDrive"
     python -m src.acl_manager bulk-remove-user marianascbastos@hotmail.com --dry-run
@@ -548,6 +550,177 @@ def bulk_remove_user_access(email: str, rclone_remote: str = "OneDrive", target_
     if failed_removals > 0:
         print(f"❌ Failed to remove {email} from {failed_removals} folder(s)")
 
+def get_item_metadata(item_path: str, rclone_remote: str = "OneDrive") -> None:
+    """
+    Get metadata information for a specific OneDrive item including creation date, creator, etc.
+    
+    Args:
+        item_path: Path to the folder or file in OneDrive
+        rclone_remote: Name of the OneDrive remote in rclone.conf
+    """
+    print(f"=== OneDrive Item Metadata ===")
+    print(f"Item: {item_path}")
+    print(f"Remote: {rclone_remote}")
+    print()
+    
+    # Get access token
+    access_token = get_access_token(rclone_remote)
+    if not access_token:
+        return
+    
+    print("✅ Successfully extracted access token from rclone.conf")
+    
+    # Get item ID and basic info
+    item_id = get_item_id(item_path, access_token)
+    if not item_id:
+        return
+    
+    # Get detailed metadata for this item
+    headers = {"Authorization": f"Bearer {access_token}"}
+    # Use expand to get additional metadata including createdBy and lastModifiedBy
+    metadata_url = f"https://graph.microsoft.com/v1.0/me/drive/items/{item_id}?expand=createdBy,lastModifiedBy"
+    print(f"\nGetting metadata from: {metadata_url}")
+    
+    try:
+        resp = requests.get(metadata_url, headers=headers, timeout=30)
+        print(f"Response Status: {resp.status_code}")
+        
+        if resp.status_code == 200:
+            item_data = resp.json()
+            
+            print(f"\n✅ Item Metadata:")
+            print("=" * 60)
+            
+            # Basic information
+            print(f"📁 Name: {item_data.get('name', 'N/A')}")
+            print(f"🆔 ID: {item_data.get('id', 'N/A')}")
+            print(f"📂 Type: {'Folder' if 'folder' in item_data else 'File'}")
+            
+            # Size information
+            size = item_data.get('size', 0)
+            if size > 0:
+                if size >= 1024 * 1024 * 1024:  # GB
+                    size_str = f"{size / (1024 * 1024 * 1024):.2f} GB"
+                elif size >= 1024 * 1024:  # MB
+                    size_str = f"{size / (1024 * 1024):.2f} MB"
+                elif size >= 1024:  # KB
+                    size_str = f"{size / 1024:.2f} KB"
+                else:
+                    size_str = f"{size} bytes"
+                print(f"📏 Size: {size_str}")
+            else:
+                print(f"📏 Size: {'N/A (folder)' if 'folder' in item_data else '0 bytes'}")
+            
+            # Dates
+            created_datetime = item_data.get('createdDateTime')
+            if created_datetime:
+                # Parse ISO format and make it more readable
+                from datetime import datetime
+                try:
+                    dt = datetime.fromisoformat(created_datetime.replace('Z', '+00:00'))
+                    print(f"📅 Created: {dt.strftime('%Y-%m-%d %H:%M:%S UTC')}")
+                except:
+                    print(f"📅 Created: {created_datetime}")
+            
+            modified_datetime = item_data.get('lastModifiedDateTime')
+            if modified_datetime:
+                try:
+                    dt = datetime.fromisoformat(modified_datetime.replace('Z', '+00:00'))
+                    print(f"📝 Last Modified: {dt.strftime('%Y-%m-%d %H:%M:%S UTC')}")
+                except:
+                    print(f"📝 Last Modified: {modified_datetime}")
+            
+            # Creator information
+            created_by = item_data.get('createdBy')
+            if created_by:
+                print(f"\n👤 Creator Information:")
+                user = created_by.get('user', {})
+                if user:
+                    print(f"   Name: {user.get('displayName', 'N/A')}")
+                    print(f"   Email: {user.get('email', 'N/A')}")
+                    print(f"   ID: {user.get('id', 'N/A')}")
+                
+                # Application that created it (if available)
+                app = created_by.get('application')
+                if app:
+                    print(f"   Created via: {app.get('displayName', 'N/A')}")
+            
+            # Last modifier information
+            last_modified_by = item_data.get('lastModifiedBy')
+            if last_modified_by:
+                print(f"\n✏️  Last Modified By:")
+                user = last_modified_by.get('user', {})
+                if user:
+                    print(f"   Name: {user.get('displayName', 'N/A')}")
+                    print(f"   Email: {user.get('email', 'N/A')}")
+                    print(f"   ID: {user.get('id', 'N/A')}")
+                
+                # Application that modified it (if available)
+                app = last_modified_by.get('application')
+                if app:
+                    print(f"   Modified via: {app.get('displayName', 'N/A')}")
+            
+            # Web URL
+            web_url = item_data.get('webUrl')
+            if web_url:
+                print(f"\n🔗 Web URL: {web_url}")
+            
+            # Parent reference
+            parent_ref = item_data.get('parentReference')
+            if parent_ref:
+                print(f"\n📁 Parent Information:")
+                print(f"   Parent ID: {parent_ref.get('id', 'N/A')}")
+                parent_path = parent_ref.get('path', '')
+                if parent_path:
+                    # Clean up the path display
+                    clean_path = parent_path.replace('/drive/root:', '').strip('/')
+                    print(f"   Parent Path: {clean_path if clean_path else 'Root'}")
+            
+            # File-specific metadata
+            if 'file' in item_data:
+                file_info = item_data['file']
+                print(f"\n📄 File-Specific Information:")
+                mime_type = file_info.get('mimeType')
+                if mime_type:
+                    print(f"   MIME Type: {mime_type}")
+                
+                # Hash information (if available)
+                hashes = file_info.get('hashes', {})
+                if hashes:
+                    print(f"   File Hashes:")
+                    for hash_type, hash_value in hashes.items():
+                        print(f"     {hash_type}: {hash_value}")
+            
+            # Folder-specific metadata
+            if 'folder' in item_data:
+                folder_info = item_data['folder']
+                print(f"\n📂 Folder-Specific Information:")
+                child_count = folder_info.get('childCount')
+                if child_count is not None:
+                    print(f"   Child Count: {child_count}")
+            
+            # Additional metadata
+            etag = item_data.get('eTag')
+            if etag:
+                print(f"\n🏷️  ETag: {etag}")
+            
+            ctag = item_data.get('cTag')
+            if ctag:
+                print(f"🏷️  CTag: {ctag}")
+                
+        elif resp.status_code == 403:
+            print("❌ Access denied - you may not have permission to view metadata for this item")
+        elif resp.status_code == 404:
+            print("❌ Item not found - check the path")
+        else:
+            print(f"❌ Failed to get metadata: {resp.status_code}")
+            print(f"Response: {resp.text}")
+            
+    except requests.exceptions.RequestException as e:
+        print(f"❌ Network error: {e}")
+    except Exception as e:
+        print(f"❌ Unexpected error: {e}")
+
 def strip_explicit_permissions(item_path: str, rclone_remote: str = "OneDrive") -> None:
     """
     Remove all explicit (non-inherited, non-owner) permissions from a OneDrive item.
@@ -658,6 +831,11 @@ def main():
     remove_parser.add_argument("email", help="Email address to remove permissions for")
     remove_parser.add_argument("remote", nargs="?", default=None, help="Name of the OneDrive remote (default: auto-detect)")
 
+    # Meta command
+    meta_parser = subparsers.add_parser('meta', help='Show metadata information for the specified item (creation date, creator, etc.)')
+    meta_parser.add_argument("item_path", help="Path to the folder or file in OneDrive")
+    meta_parser.add_argument("remote", nargs="?", default=None, help="Name of the OneDrive remote (default: auto-detect)")
+    
     # Strip command
     strip_parser = subparsers.add_parser('strip', help='Remove all explicit (non-inherited) permissions from the item')
     strip_parser.add_argument("item_path", help="Path to the folder or file in OneDrive")
@@ -694,6 +872,8 @@ def main():
         invite_permission_to_folders(args.email, args.folder_paths, args.remote)
     elif args.command == 'remove':
         remove_permission(args.item_path, args.email, args.remote)
+    elif args.command == 'meta':
+        get_item_metadata(args.item_path, args.remote)
     elif args.command == 'strip':
         strip_explicit_permissions(args.item_path, args.remote)
     elif args.command == 'bulk-remove-user':
