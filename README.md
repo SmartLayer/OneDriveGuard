@@ -226,7 +226,11 @@ Both versions display the following ACL information:
      ```bash
      rclone about OneDrive-ACL:
      ```
-   - Alternative: Re-authenticate completely:
+   - Alternative: Refresh the token directly:
+     ```bash
+     rclone config reconnect OneDrive-ACL:
+     ```
+   - Or re-authenticate completely:
      ```bash
      rclone config
      # Select "Edit existing remote" → choose your OneDrive remote → follow prompts
