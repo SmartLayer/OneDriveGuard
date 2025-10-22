@@ -111,7 +111,7 @@ if {$gui_mode} {
     $tree configure -xscrollcommand "$h_scrollbar set"
 
     # Configure treeview columns
-    $tree heading #0 -text "Permission"
+    $tree heading #0 -text ""
     $tree column #0 -width 100 -minwidth 80
 
     $tree heading id -text "ID"
@@ -139,6 +139,12 @@ if {$gui_mode} {
     $tree tag configure owner -background lightgreen
     $tree tag configure write -background lightblue
     $tree tag configure read -background lightyellow
+    
+    # Fix Treeview row height to match font (prevents text clipping on Linux HiDPI)
+    set f [ttk::style lookup Treeview -font]
+    if {$f eq ""} { set f TkDefaultFont }
+    set h [expr {[font metrics $f -linespace] + 6}]  ;# a bit of padding
+    ttk::style configure Treeview -rowheight $h
 }
 
 proc update_status {message {color blue}} {
@@ -875,7 +881,7 @@ proc fetch_acl {{item_path ""} {remote_name "OneDrive"} {target_dir ""}} {
         display_acl_cli $permissions $item_id
     }
     
-    update_status "✅ ACL listing complete - $perm_count permission(s) displayed" green
+    update_status "✅ ACL listing of: $item_id" green
 }
 
 if {$gui_mode} {
