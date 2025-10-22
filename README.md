@@ -91,13 +91,17 @@ The meta command works with **basic read permissions**:
 5. **Install Tcl packages** (for Tcl/Tk version):
    ```bash
    # On Ubuntu/Debian:
-   sudo apt-get install tcllib
+   sudo apt-get install tcllib tcl-tls
    
    # On macOS with Homebrew:
    brew install tcl-tk
    
    # On Windows, these packages are usually included with ActiveTcl
    ```
+
+   **Note**: 
+   - The `tcllib` package includes the required `json` package for JSON parsing
+   - The `tcl-tls` package provides HTTPS support for secure API requests
 
 ## Usage
 
@@ -154,8 +158,8 @@ python -m src.acl_scanner [options] [dirname]
 
 **Options:**
 - `--remote REMOTE_NAME` - OneDrive remote name (default: OneDrive)
-- `--max-results N` - Maximum results to return (default: 1000)
-- `--only-user EMAIL` - Filter to show only folders shared with specific user
+- `--max-depth N` - Maximum depth to scan (default: 3)
+- `--only-user EMAIL` - Filter to show only folders with explicit permissions for specific user (enables pruning optimization)
 - `dirname` - Optional: scan only under this directory path
 
 **Examples:**
@@ -172,12 +176,35 @@ python -m src.acl_scanner --only-user "user@example.com"
 # Combine filters
 python -m src.acl_scanner --only-user "user@example.com" "Work"
 
-# Limit results
-python -m src.acl_scanner --max-results 500
+# Scan with custom depth
+python -m src.acl_scanner --max-depth 5
 
 # Use different remote
 python -m src.acl_scanner --remote "MyOneDrive"
 ```
+
+## Pruning Optimization
+
+When using the `--only-user` parameter, the scanner implements smart pruning to dramatically improve performance:
+
+- **Level-based scanning**: Scans folders level by level up to the specified `--max-depth` (default: 3)
+- **Explicit permission detection**: Only includes folders where the user has explicit (non-inherited) permissions
+- **Subtree pruning**: When a folder with explicit user permissions is found, all its subfolders are skipped (assumed to inherit permissions)
+- **Progress tracking**: Shows folder counts per level as scanning progresses
+
+**Example output:**
+```
+📊 Folder count by level:
+   Level 0: 1 folders
+   Level 1: 45 folders  
+   Level 2: 203 folders
+   Level 3: 891 folders
+
+✅ Found explicit permission: 👥 Documents/Project
+   🚀 Pruning: Found explicit permission, skipping subfolders (inherited)
+```
+
+This optimization is particularly effective for large OneDrive structures with many nested folders, as it avoids redundant API calls for inherited permissions.
 
 ### Tcl/Tk GUI Version
 
@@ -272,13 +299,17 @@ Both versions display the following ACL information:
 ### Tcl/Tk Specific Issues
 
 1. **"package require tls" fails**
-   - Install the tls package for your Tcl distribution
-   - On Ubuntu: `sudo apt-get install tcllib`
-   - On macOS: `brew install tcl-tk`
+   - Install the tcl-tls package: `sudo apt-get install tcl-tls`
+   - On Ubuntu/Debian: `sudo apt-get install tcl-tls`
+   - On macOS: `brew install tcl-tk` (includes tcl-tls)
+   - On Windows: Usually included with ActiveTcl
 
 2. **"package require json" fails**
-   - Install the json package for your Tcl distribution
-   - Usually included with tcllib
+   - Install the tcllib package: `sudo apt-get install tcllib`
+   - The json package is included with tcllib
+   - On Ubuntu/Debian: `sudo apt-get install tcllib`
+   - On macOS: `brew install tcl-tk` (includes tcllib)
+   - On Windows: Usually included with ActiveTcl
 
 ## API Details
 

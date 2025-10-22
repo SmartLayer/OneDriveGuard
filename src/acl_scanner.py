@@ -125,28 +125,38 @@ def get_item_path(item_id: str, access_token: str) -> str:
     except Exception:
         return 'Unknown'
 
-def scan_shared_folders_recursive(access_token: str, max_results: int = 1000, target_dir: Optional[str] = None) -> List[Dict]:
+def scan_shared_folders_recursive(access_token: str, max_depth: int = 3, target_dir: Optional[str] = None, only_user: Optional[str] = None) -> List[Dict]:
     """
-    Recursively scan OneDrive for all shared folders by traversing the entire folder structure.
-    This is the most efficient and comprehensive method for finding shared folders.
+    Recursively scan OneDrive for all shared folders by traversing the folder structure up to max_depth.
+    When only_user is specified, implements smart pruning: skips subfolders when explicit permissions are found.
     
     Args:
         access_token: OAuth access token for Graph API
-        max_results: Maximum number of results to return
+        max_depth: Maximum depth to scan (default: 3)
         target_dir: Optional directory path to scan under (e.g., "Documents/Projects")
+        only_user: Optional email to filter results by user (enables pruning optimization)
     """
-    print("🔍 Scanning OneDrive for shared folders recursively...")
+    print(f"🔍 Scanning OneDrive for shared folders recursively (max depth: {max_depth})...")
+    if only_user:
+        print(f"🎯 Filtering for user: {only_user} (with pruning optimization)")
     
     headers = {"Authorization": f"Bearer {access_token}"}
     shared_folders = []
     checked_folders = set()  # Track checked folders to avoid duplicates
+    folders_per_level = {}  # Track folder counts per level
+    target_user_lower = only_user.lower() if only_user else None
     
-    def check_folder_recursive(folder_id: str, folder_path: str = "", max_depth: int = 10, current_depth: int = 0):
+    def check_folder_recursive(folder_id: str, folder_path: str = "", current_depth: int = 0):
         """Recursively check a folder and all its subfolders for sharing."""
         if current_depth >= max_depth or folder_id in checked_folders:
             return
         
         checked_folders.add(folder_id)
+        
+        # Track folder count per level
+        if current_depth not in folders_per_level:
+            folders_per_level[current_depth] = 0
+        folders_per_level[current_depth] += 1
         
         try:
             # Get permissions for this folder
@@ -160,7 +170,53 @@ def scan_shared_folders_recursive(access_token: str, max_results: int = 1000, ta
                 # Analyze permissions
                 has_link, has_direct, perm_count, shared_users = analyze_permissions(permissions)
                 
-                if has_link or has_direct:
+                # Check for explicit user permissions if only_user is specified
+                has_explicit_user_permission = False
+                if target_user_lower:
+                    for perm in permissions:
+                        # Skip owner permissions
+                        roles = perm.get('roles', [])
+                        if 'owner' in roles:
+                            continue
+                        
+                        # Check if this permission is inherited (has inheritedFrom property)
+                        inherited_from = perm.get('inheritedFrom')
+                        if inherited_from:
+                            # This permission is inherited, skip it
+                            continue
+                        
+                        # Check direct user permissions
+                        granted_to = perm.get('grantedTo')
+                        if granted_to and granted_to.get('user'):
+                            user = granted_to['user']
+                            user_email = user.get('email', '').lower()
+                            if target_user_lower in user_email:
+                                has_explicit_user_permission = True
+                                break
+                        
+                        # Check grantedToIdentities (OneDrive Business)
+                        granted_to_identities = perm.get('grantedToIdentities', [])
+                        for identity in granted_to_identities:
+                            if identity.get('user'):
+                                user = identity['user']
+                                user_email = user.get('email', '').lower()
+                                if target_user_lower in user_email:
+                                    has_explicit_user_permission = True
+                                    break
+                        
+                        if has_explicit_user_permission:
+                            break
+                
+                # Determine if this folder should be included in results
+                should_include_folder = False
+                if target_user_lower:
+                    # When filtering by user, only include if explicit permission found
+                    should_include_folder = has_explicit_user_permission
+                else:
+                    # When not filtering by user, include all shared folders
+                    should_include_folder = has_link or has_direct
+                
+                if should_include_folder:
                     # Validate that shared_users is not empty
                     if not shared_users:
                         print(f"   ❌ ERROR: Folder '{folder_path or folder_id}' has sharing enabled but empty shared_users list!")
@@ -211,7 +267,15 @@ def scan_shared_folders_recursive(access_token: str, max_results: int = 1000, ta
                             'shared_users': shared_users
                         })
                         
-                        print(f"   ✅ Found shared: {symbol} {folder_path}")
+                        if target_user_lower and has_explicit_user_permission:
+                            print(f"   ✅ Found explicit permission: {symbol} {folder_path}")
+                        else:
+                            print(f"   ✅ Found shared: {symbol} {folder_path}")
+                
+                # Implement pruning: if explicit user permission found, skip children
+                if target_user_lower and has_explicit_user_permission:
+                    print(f"   🚀 Pruning: Found explicit permission, skipping subfolders (inherited)")
+                    return  # Skip scanning children
             
             # Get children of this folder and recursively check them
             children_url = f"https://graph.microsoft.com/v1.0/me/drive/items/{folder_id}/children"
@@ -228,7 +292,7 @@ def scan_shared_folders_recursive(access_token: str, max_results: int = 1000, ta
                         child_path = f"{folder_path}/{child_name}" if folder_path else child_name
                         
                         # Recursively check this child folder
-                        check_folder_recursive(child_id, child_path, max_depth, current_depth + 1)
+                        check_folder_recursive(child_id, child_path, current_depth + 1)
         
         except Exception as e:
             # Skip folders we can't access
@@ -246,7 +310,7 @@ def scan_shared_folders_recursive(access_token: str, max_results: int = 1000, ta
                 target_id = target_data.get('id')
                 
                 print(f"📂 Starting recursive search from directory: {target_dir}")
-                check_folder_recursive(target_id, target_dir, max_depth=10, current_depth=0)
+                check_folder_recursive(target_id, target_dir, current_depth=0)
             else:
                 print(f"⚠️  Target directory '{target_dir}' not found or not accessible")
                 return shared_folders
@@ -260,7 +324,7 @@ def scan_shared_folders_recursive(access_token: str, max_results: int = 1000, ta
                 root_id = root_data.get('id')
                 
                 print(f"📂 Starting recursive search from root...")
-                check_folder_recursive(root_id, "", max_depth=10, current_depth=0)
+                check_folder_recursive(root_id, "", current_depth=0)
             else:
                 print(f"⚠️  Failed to get root: {resp.status_code}")
                 return shared_folders
@@ -268,7 +332,13 @@ def scan_shared_folders_recursive(access_token: str, max_results: int = 1000, ta
     except Exception as e:
         print(f"❌ Search error: {e}")
     
-    print(f"✅ Scan complete. Found {len(shared_folders)} shared folders.")
+    # Print level statistics
+    print(f"\n📊 Folder count by level:")
+    for level in sorted(folders_per_level.keys()):
+        count = folders_per_level[level]
+        print(f"   Level {level}: {count} folders")
+    
+    print(f"\n✅ Scan complete. Found {len(shared_folders)} shared folders.")
     print(f"   Checked {len(checked_folders)} total folders recursively.")
     return shared_folders
 
@@ -356,20 +426,21 @@ def filter_folders_by_user(shared_folders: List[Dict], target_user: str, access_
     
     return filtered_folders
 
-def scan_shared_folders(rclone_remote: Optional[str] = None, max_results: int = 1000, target_dir: Optional[str] = None, only_user: Optional[str] = None, json_output: bool = False) -> None:
+def scan_shared_folders(rclone_remote: Optional[str] = None, max_depth: int = 3, target_dir: Optional[str] = None, only_user: Optional[str] = None, json_output: bool = False) -> None:
     """
-    Scan OneDrive for all shared folders by recursively traversing the folder structure.
+    Scan OneDrive for all shared folders by recursively traversing the folder structure up to max_depth.
+    When only_user is specified, implements smart pruning to skip subfolders with inherited permissions.
     
     Args:
         rclone_remote: Name of the rclone remote
-        max_results: Maximum number of results to return
+        max_depth: Maximum depth to scan (default: 3)
         target_dir: Optional directory path to scan under
-        only_user: Optional email to filter results by user
+        only_user: Optional email to filter results by user (enables pruning optimization)
         json_output: If True, output detailed JSON instead of formatted text
     """
     print(f"=== OneDrive Shared Folders Scanner ===")
     print(f"Remote: {rclone_remote}")
-    print(f"Max results: {max_results}")
+    print(f"Max depth: {max_depth}")
     if target_dir:
         print(f"Target directory: {target_dir}")
     if only_user:
@@ -387,15 +458,8 @@ def scan_shared_folders(rclone_remote: Optional[str] = None, max_results: int = 
     
     # Scan for shared folders
     start_time = time.time()
-    shared_folders = scan_shared_folders_recursive(access_token, max_results, target_dir)
+    shared_folders = scan_shared_folders_recursive(access_token, max_depth, target_dir, only_user)
     scan_time = time.time() - start_time
-    
-    # Apply user filter if specified
-    if only_user and shared_folders:
-        print(f"🔍 Filtering results for user: {only_user}")
-        original_count = len(shared_folders)
-        shared_folders = filter_folders_by_user(shared_folders, only_user, access_token)
-        print(f"   Found {len(shared_folders)} folders shared with {only_user} (out of {original_count} total shared folders)")
     
     print()
     print("=" * 80)
@@ -497,10 +561,10 @@ def main():
     parser = argparse.ArgumentParser(description="Scan OneDrive for shared folders")
     parser.add_argument("--remote", default=None, 
                        help="Name of the OneDrive remote (default: auto-detect)")
-    parser.add_argument("--max-results", type=int, default=1000,
-                       help="Maximum results to return (default: 1000)")
+    parser.add_argument("--max-depth", type=int, default=3,
+                       help="Maximum depth to scan (default: 3)")
     parser.add_argument("--only-user", 
-                       help="Filter to show only folders shared with specific user (email)")
+                       help="Filter to show only folders with explicit permissions for specific user (enables pruning optimization)")
     parser.add_argument("--json-output", action="store_true",
                        help="Output results in JSON format for debugging")
     parser.add_argument("dirname", nargs="?", 
@@ -511,6 +575,10 @@ def main():
     print("OneDrive Shared Folders Scanner")
     print("=" * 50)
     
+    # Show default max depth if not specified
+    if args.max_depth == 3:
+        print("Using max depth: 3")
+    
     # Check if requests is available
     try:
         import requests
@@ -520,7 +588,7 @@ def main():
         return
     
     # Execute the scan
-    scan_shared_folders(args.remote, args.max_results, args.dirname, args.only_user, args.json_output)
+    scan_shared_folders(args.remote, args.max_depth, args.dirname, args.only_user, args.json_output)
 
 if __name__ == "__main__":
     main()
