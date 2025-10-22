@@ -995,36 +995,36 @@ def main():
     # List command
     list_parser = subparsers.add_parser('list', help='List ACL for the specified item(s)')
     list_parser.add_argument("item_paths", nargs="+", help="One or more paths to folders or files in OneDrive")
-    list_parser.add_argument("remote", nargs="?", default=None, help="Name of the OneDrive remote (default: auto-detect)")
+    list_parser.add_argument("--remote", default=None, help="Name of the OneDrive remote (default: auto-detect)")
     
     # Invite command
     invite_parser = subparsers.add_parser('invite', help='Send invitation with editing permission to multiple folders (Personal OneDrive)')
     invite_parser.add_argument("email", help="Email address to send invitation to")
     invite_parser.add_argument("folder_paths", nargs="+", help="One or more folder paths in OneDrive to grant access to")
-    invite_parser.add_argument("remote", nargs="?", default=None, help="Name of the OneDrive remote (default: auto-detect)")
+    invite_parser.add_argument("--remote", default=None, help="Name of the OneDrive remote (default: auto-detect)")
     
     # Remove command
     remove_parser = subparsers.add_parser('remove', help='Remove all permissions for the email from specified item(s)')
     remove_parser.add_argument("email", help="Email address to remove permissions for")
     remove_parser.add_argument("item_paths", nargs="+", help="One or more paths to folders or files in OneDrive")
-    remove_parser.add_argument("remote", nargs="?", default=None, help="Name of the OneDrive remote (default: auto-detect)")
+    remove_parser.add_argument("--remote", default=None, help="Name of the OneDrive remote (default: auto-detect)")
 
     # Meta command
     meta_parser = subparsers.add_parser('meta', help='Show metadata information for the specified item(s) (creation date, creator, etc.)')
     meta_parser.add_argument("item_paths", nargs="+", help="One or more paths to folders or files in OneDrive")
-    meta_parser.add_argument("remote", nargs="?", default=None, help="Name of the OneDrive remote (default: auto-detect)")
+    meta_parser.add_argument("--remote", default=None, help="Name of the OneDrive remote (default: auto-detect)")
     
     # Strip command
     strip_parser = subparsers.add_parser('strip', help='Remove all explicit (non-inherited) permissions from the specified item(s)')
     strip_parser.add_argument("item_paths", nargs="+", help="One or more paths to folders or files in OneDrive")
-    strip_parser.add_argument("remote", nargs="?", default=None, help="Name of the OneDrive remote (default: auto-detect)")
+    strip_parser.add_argument("--remote", default=None, help="Name of the OneDrive remote (default: auto-detect)")
     
     # Bulk remove user command
     bulk_remove_parser = subparsers.add_parser('bulk-remove-user', help='Find and remove a user from all shared folders')
     bulk_remove_parser.add_argument("email", help="Email address to remove from all folders")
     bulk_remove_parser.add_argument("--target-dir", help="Optional: limit search to this directory")
     bulk_remove_parser.add_argument("--dry-run", action="store_true", help="Show what would be removed without making changes")
-    bulk_remove_parser.add_argument("remote", nargs="?", default=None, help="Name of the OneDrive remote (default: auto-detect)")
+    bulk_remove_parser.add_argument("--remote", default=None, help="Name of the OneDrive remote (default: auto-detect)")
     
     args = parser.parse_args()
     
