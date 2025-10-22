@@ -39,6 +39,17 @@ OneDriveGuard/
 - `json` package for JSON parsing
 - Valid OAuth token in `~/.config/rclone/rclone.conf`
 
+## Testing Notes
+
+**IMPORTANT**: When testing the `user` subcommand, always use `--max-depth 1` to avoid long-running scans:
+```bash
+tclsh acl-inspector.tcl user admin@example.com --max-depth 1
+```
+
+- **Default max depth**: 3 (for normal production use)
+- **Testing max depth**: 1 (for quick testing to avoid long scans)
+- **Comprehensive scanning**: Use 3-5 for thorough analysis
+
 ## Permission Requirements
 
 ### ACL Scanner (Read-Only Operations)
