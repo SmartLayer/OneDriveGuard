@@ -102,6 +102,7 @@ The meta command works with **basic read permissions**:
    **Note**: 
    - The `tcllib` package includes the required `json` package for JSON parsing
    - The `tcl-tls` package provides HTTPS support for secure API requests
+   - Ttk (Themed Tk) widgets are included with Tk 8.5+ and work with the standard Ubuntu packages
 
 ## Usage
 
