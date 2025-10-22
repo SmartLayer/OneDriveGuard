@@ -43,8 +43,18 @@ package require tls
 set access_token ""
 set item_path ""
 set remote_name "OneDrive"
+set current_folder_id "root"
+set current_folder_path ""
+
+# GUI widget variables (will be set in GUI mode)
+set path_entry ""
+set remote_entry ""
+set folder_listbox ""
 
 if {$gui_mode} {
+    # Declare global widget variables
+    global path_entry remote_entry folder_listbox
+    
     # Create main window
     wm title . "OneDrive ACL Lister"
     wm geometry . "800x600"
@@ -75,15 +85,24 @@ if {$gui_mode} {
     pack $remote_entry -side left -fill x -expand yes -padx {5 0}
     $remote_entry insert 0 "OneDrive"
 
-    # Buttons frame
-    set button_frame [frame $input_frame.buttons]
-    pack $button_frame -fill x -pady {10 0}
+    # Folder navigation frame
+    set folder_frame [frame $main_frame.folder]
+    pack $folder_frame -fill both -expand yes -pady {0 10}
 
-    set fetch_button [button $button_frame.fetch -text "Fetch ACL" -command fetch_acl]
-    pack $fetch_button -side left -padx {0 5}
+    # Folder listbox
+    label $folder_frame.label -text "Remote Folders:"
+    pack $folder_frame.label -anchor w -pady {0 5}
 
-    set clear_button [button $button_frame.clear -text "Clear" -command clear_treeview]
-    pack $clear_button -side left
+    set folder_container [frame $folder_frame.container]
+    pack $folder_container -fill both -expand yes
+
+    set folder_listbox [listbox $folder_container.listbox -height 8]
+    pack $folder_listbox -side left -fill both -expand yes
+
+    # Folder listbox scrollbar
+    set folder_scrollbar [scrollbar $folder_container.scroll -orient vertical -command "$folder_listbox yview"]
+    pack $folder_scrollbar -side right -fill y
+    $folder_listbox configure -yscrollcommand "$folder_scrollbar set"
 
     # Status label
     set status_label [label $main_frame.status -text "Ready" -fg blue]
@@ -151,6 +170,7 @@ proc update_status {message {color blue}} {
     global status_label gui_mode
     if {$gui_mode} {
         $status_label configure -text $message -fg $color
+        puts "GUI STATUS: $message (color: $color)"
     } else {
         puts "STATUS: $message"
     }
@@ -163,6 +183,275 @@ proc clear_treeview {} {
             $tree delete $item
         }
         update_status "Treeview cleared" green
+    }
+}
+
+# Navigation functions for folder browsing
+proc load_folder_contents {folder_id folder_path} {
+    global current_folder_id current_folder_path folder_listbox path_entry access_token gui_mode
+    
+    if {!$gui_mode} {
+        return
+    }
+    
+    puts "GUI: Loading folder contents - ID: '$folder_id', Path: '$folder_path'"
+    
+    set current_folder_id $folder_id
+    set current_folder_path $folder_path
+    
+    # Update path display
+    $path_entry delete 0 end
+    $path_entry insert 0 $folder_path
+    
+    # Clear and populate folder list
+    $folder_listbox delete 0 end
+    
+    # Add navigation entries
+    if {$folder_id ne "root"} {
+        $folder_listbox insert end ".."
+    }
+    
+    # Show loading indicator
+    $folder_listbox insert end "Loading..."
+    update
+    
+    # Fetch folder contents from OneDrive API
+    fetch_remote_folder_contents $folder_id
+}
+
+proc fetch_remote_folder_contents {folder_id} {
+    global access_token folder_listbox remote_entry gui_mode
+    
+    if {!$gui_mode} {
+        return
+    }
+    
+    puts "GUI: Fetching remote folder contents for ID: $folder_id"
+    
+    # Get access token
+    set access_token [get_access_token [$remote_entry get]]
+    if {$access_token eq ""} {
+        puts "GUI: No access token available"
+        $folder_listbox delete 0 end
+        $folder_listbox insert end "❌ No access token"
+        update_status "No access token available" red
+        return
+    }
+    
+    puts "GUI: Got access token, making API request for children..."
+    
+    # Make API call to get children
+    set headers [list Authorization "Bearer $access_token"]
+    if {$folder_id eq "root"} {
+        set children_url "https://graph.microsoft.com/v1.0/me/drive/root/children"
+    } else {
+        set children_url "https://graph.microsoft.com/v1.0/me/drive/items/$folder_id/children"
+    }
+    
+    set result [make_http_request $children_url $headers]
+    set status [lindex $result 0]
+    set data [lindex $result 1]
+    
+    if {$status eq "200"} {
+        # Clear loading indicator
+        $folder_listbox delete 0 end
+        
+        # Add navigation entries
+        if {$folder_id ne "root"} {
+            $folder_listbox insert end ".."
+        }
+        
+        # Parse and add folder entries
+        set children_dict [json::json2dict $data]
+        set children [dict get $children_dict value]
+        
+        foreach child $children {
+            if {[dict exists $child folder]} {
+                set child_name [dict get $child name]
+                $folder_listbox insert end $child_name
+            }
+        }
+        
+        # Auto-fetch ACL for current folder
+        fetch_acl_for_current_folder
+    } else {
+        # Show error
+        $folder_listbox delete 0 end
+        $folder_listbox insert end "❌ Error loading folders"
+        if {$status eq "error"} {
+            $folder_listbox insert end "Network error: $data"
+        } else {
+            $folder_listbox insert end "HTTP $status: $data"
+        }
+    }
+}
+
+proc navigate_to_folder {folder_name} {
+    global current_folder_id current_folder_path folder_listbox gui_mode
+    
+    if {!$gui_mode} {
+        return
+    }
+    
+    # Handle navigation entries
+    if {$folder_name eq ".."} {
+        # Go to parent folder
+        if {$current_folder_id ne "root"} {
+            # Get parent folder ID by going up one level
+            go_to_parent_folder
+        }
+        return
+    }
+    
+    # No prefix to remove - folder names are stored directly
+    
+    # Find the folder ID and navigate into it
+    find_and_navigate_to_folder $folder_name
+}
+
+proc go_to_parent_folder {} {
+    global current_folder_id current_folder_path access_token gui_mode
+    
+    if {!$gui_mode} {
+        return
+    }
+    
+    # Get current folder info to find parent
+    set headers [list Authorization "Bearer $access_token"]
+    set item_url "https://graph.microsoft.com/v1.0/me/drive/items/$current_folder_id"
+    
+    set result [make_http_request $item_url $headers]
+    set status [lindex $result 0]
+    set data [lindex $result 1]
+    
+    if {$status eq "200"} {
+        set item_data [json::json2dict $data]
+        if {[dict exists $item_data parentReference]} {
+            set parent_ref [dict get $item_data parentReference]
+            if {[dict exists $parent_ref id]} {
+                set parent_id [dict get $parent_ref id]
+                # Check if this is the root
+                if {[dict exists $parent_ref path] && [dict get $parent_ref path] eq "/drive/root:"} {
+                    set parent_id "root"
+                }
+                
+                # Update path
+                set new_path [file dirname $current_folder_path]
+                if {$new_path eq "."} {
+                    set new_path ""
+                }
+                
+                load_folder_contents $parent_id $new_path
+            }
+        }
+    }
+}
+
+proc find_and_navigate_to_folder {folder_name} {
+    global current_folder_id current_folder_path access_token gui_mode
+    
+    if {!$gui_mode} {
+        return
+    }
+    
+    # Get current folder contents to find the folder ID
+    set headers [list Authorization "Bearer $access_token"]
+    if {$current_folder_id eq "root"} {
+        set children_url "https://graph.microsoft.com/v1.0/me/drive/root/children"
+    } else {
+        set children_url "https://graph.microsoft.com/v1.0/me/drive/items/$current_folder_id/children"
+    }
+    
+    set result [make_http_request $children_url $headers]
+    set status [lindex $result 0]
+    set data [lindex $result 1]
+    
+    if {$status eq "200"} {
+        set children_dict [json::json2dict $data]
+        set children [dict get $children_dict value]
+        
+        foreach child $children {
+            if {[dict exists $child folder]} {
+                set child_name [dict get $child name]
+                if {$child_name eq $folder_name} {
+                    set child_id [dict get $child id]
+                    set new_path $current_folder_path
+                    if {$new_path ne ""} {
+                        set new_path "$new_path/$folder_name"
+                    } else {
+                        set new_path $folder_name
+                    }
+                    load_folder_contents $child_id $new_path
+                    return
+                }
+            }
+        }
+        update_status "Folder '$folder_name' not found" red
+    }
+}
+
+proc fetch_acl_for_current_folder {} {
+    global current_folder_path gui_mode
+    
+    if {!$gui_mode} {
+        return
+    }
+    
+    if {$current_folder_path ne ""} {
+        fetch_acl $current_folder_path
+    } else {
+        # For root folder, we need to get the root folder ID
+        fetch_acl ""
+    }
+}
+
+proc navigate_to_typed_path {path} {
+    global remote_entry gui_mode
+    
+    if {!$gui_mode} {
+        return
+    }
+    
+    puts "GUI: Navigating to typed path: '$path'"
+    
+    # Navigate to the typed path by getting the folder ID
+    set access_token [get_access_token [$remote_entry get]]
+    if {$access_token eq ""} {
+        puts "GUI: No access token available"
+        update_status "No access token available" red
+        return
+    }
+    
+    puts "GUI: Got access token, making API request..."
+    
+    # Get item info for the typed path
+    set headers [list Authorization "Bearer $access_token"]
+    set encoded_path [string map {" " "%20"} $path]
+    set item_url "https://graph.microsoft.com/v1.0/me/drive/root:/$encoded_path"
+    
+    puts "GUI: API URL: $item_url"
+    
+    # Use the existing make_http_request function
+    set result [make_http_request $item_url $headers]
+    
+    set status [lindex $result 0]
+    set data [lindex $result 1]
+    
+    puts "GUI: API response status: $status"
+    
+    if {$status eq "200"} {
+        set item_data [json::json2dict $data]
+        if {[dict exists $item_data folder]} {
+            set folder_id [dict get $item_data id]
+            puts "GUI: Found folder ID: $folder_id"
+            load_folder_contents $folder_id $path
+        } else {
+            puts "GUI: Path '$path' is not a folder"
+            update_status "Path '$path' is not a folder" red
+        }
+    } else {
+        puts "GUI: Path '$path' not found - Status: $status, Data: $data"
+        update_status "Path '$path' not found" red
     }
 }
 
@@ -751,8 +1040,22 @@ proc fetch_acl {{item_path ""} {remote_name "OneDrive"} {target_dir ""}} {
         set full_path "$target_dir/$item_path"
     }
     
-    # Get item info - URL encode the path
-    set encoded_path [string map {" " "%20" "✈️" "%E2%9C%88%EF%B8%8F"} $full_path]
+    # Get item info - URL encode the path properly for all Unicode characters
+    # Use a more direct approach that handles Unicode properly
+    set encoded_path ""
+    foreach char [split $full_path ""] {
+        if {$char eq " "} {
+            append encoded_path "%20"
+        } elseif {[string is ascii $char]} {
+            append encoded_path $char
+        } else {
+            # For non-ASCII characters, use proper UTF-8 encoding
+            set utf8_bytes [encoding convertto utf-8 $char]
+            foreach byte [split $utf8_bytes ""] {
+                append encoded_path [format "%%%02X" [scan $byte %c]]
+            }
+        }
+    }
     set item_url "https://graph.microsoft.com/v1.0/me/drive/root:/$encoded_path"
     update_status "Getting item info from: $item_url" blue
     
@@ -886,26 +1189,74 @@ proc fetch_acl {{item_path ""} {remote_name "OneDrive"} {target_dir ""}} {
 
 if {$gui_mode} {
     # GUI mode - create interface
-    # Bind Enter key to fetch button
-    bind $path_entry <Return> fetch_acl
-    bind $remote_entry <Return> fetch_acl
+    # Bind Enter key to path entry for manual navigation
+    bind $path_entry <Return> {
+        set path [%W get]
+        if {$path ne ""} {
+            # Navigate to the typed path
+            navigate_to_typed_path $path
+        }
+    }
+    bind $remote_entry <Return> {
+        # Refresh folder list when remote changes
+        load_folder_contents $current_folder_id $current_folder_path
+    }
+    
+    # Bind folder listbox events
+    bind $folder_listbox <Button-1> {
+        set selection [%W curselection]
+        if {$selection ne ""} {
+            set folder_name [%W get $selection]
+            navigate_to_folder $folder_name
+        }
+    }
+    bind $folder_listbox <Double-Button-1> {
+        set selection [%W curselection]
+        if {$selection ne ""} {
+            set folder_name [%W get $selection]
+            if {$folder_name ne ".."} {
+                navigate_to_folder $folder_name
+            }
+        }
+    }
     
     # Set focus to path entry
     focus $path_entry
     
-    # Main event loop
+    # Main event loop - handle command line arguments
+    set target_dir ""
     if {[info exists argv] && [llength $argv] > 0} {
-        set item_path [lindex $argv 0]
-        $path_entry insert 0 $item_path
-        
-        if {[llength $argv] > 1} {
-            set remote_name [lindex $argv 1]
-            $remote_entry delete 0 end
-            $remote_entry insert 0 $remote_name
+        set i 0
+        while {$i < [llength $argv]} {
+            set arg [lindex $argv $i]
+            if {$arg eq "--dir" && $i + 1 < [llength $argv]} {
+                set target_dir [lindex $argv [expr $i + 1]]
+                incr i 2
+            } elseif {$arg eq "--remote" && $i + 1 < [llength $argv]} {
+                set remote_name [lindex $argv [expr $i + 1]]
+                $remote_entry delete 0 end
+                $remote_entry insert 0 $remote_name
+                incr i 2
+            } elseif {[string index $arg 0] ne "-"} {
+                set item_path $arg
+                $path_entry insert 0 $item_path
+                incr i
+            } else {
+                incr i
+            }
         }
     }
     
     update_status "OneDrive ACL Lister - Ready to fetch ACL information" blue
+    
+    # Initialize with root folder or target directory
+    if {$target_dir ne ""} {
+        # Navigate to the specified directory
+        navigate_to_typed_path $target_dir
+    } else {
+        # Initialize with root folder
+        load_folder_contents "root" ""
+    }
 } else {
     # CLI mode - process command line arguments
     if {[info exists argv] && [llength $argv] > 0} {
