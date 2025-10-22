@@ -20,7 +20,7 @@ OneDriveGuard/
 │   ├── acl_scanner.py     # ACL scanning and discovery
 │   ├── config_utils.py    # Shared configuration utilities
 │   └── debug_permissions.py # Debug tools for permission analysis
-├── acl_demo.tcl           # Tcl/Tk GUI version
+├── acl-inspector.tcl      # Tcl/Tk GUI version
 └── README.md              # This file
 ```
 
