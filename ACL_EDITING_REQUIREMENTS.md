@@ -336,6 +336,18 @@ The application shall replicate rclone's OAuth flow for token acquisition.
 6. Exchange authorization code for access token
 7. Save token to `token.json`
 
+### 4.1.1 Microsoft OAuth client details (as used in experiments)
+
+These values mirror rclone's built-in OneDrive client and were used by our experiment scripts (`oauth_experiment.py`, `show_token_format.py`, `test_rclone_auth.py`). They work with personal Microsoft accounts and the local callback server.
+
+```
+Client ID: b15665d9-eda6-4092-8539-0eec376afd59
+Client Secret: qtyfaBBYA403=unZUP40~_#
+Redirect URI: http://localhost:53682/
+Auth URL: https://login.microsoftonline.com/common/oauth2/v2.0/authorize
+Token URL: https://login.microsoftonline.com/common/oauth2/v2.0/token
+```
+
 ### 4.2 rclone OAuth Flow Simulation
 
 **Step 1: Drive Type Selection**
@@ -391,6 +403,12 @@ https://login.microsoftonline.com/common/oauth2/v2.0/authorize
 - `response_mode`: `query`
 - `prompt`: `select_account` (allow user to choose account)
 
+Notes from experiments:
+
+- Microsoft returns a `scope` string in the token response.
+
+- rclone requests `Sites.Read.All` by default, but personal accounts typically do not receive it. For ACL editing we must request `Sites.Manage.All` explicitly; this may require admin consent for organisational tenants. Personal accounts may be limited to file scopes only.
+
 **Token Exchange Endpoint**:
 ```
 POST https://login.microsoftonline.com/common/oauth2/v2.0/token
@@ -399,26 +417,122 @@ Content-Type: application/x-www-form-urlencoded
 grant_type=authorization_code
 &code={authorization_code}
 &client_id={client_id}
+&client_secret={client_secret}
 &redirect_uri=http://localhost:53682/
 &scope={requested_scopes}
 ```
 
-### 4.4 Local HTTP Server for OAuth Callback
+### 4.4 Local HTTP server for OAuth callback (Tcl reference)
 
-**Implementation Requirements**:
+The following Tcl snippet demonstrates a minimal local callback server and token exchange. It integrates cleanly with `acl-inspector.tcl`. Use as a reference implementation.
+
 ```tcl
-# Start local server on port 53682
-socket -server accept_oauth_callback 53682
+package require http
+package require tls
+package require json
 
-proc accept_oauth_callback {chan addr port} {
-  # Read HTTP request
-  # Extract authorization code from query string
-  # Send success response to browser
-  # Exchange code for token
-  # Save to token.json
-  # Signal application to proceed
+::http::register https 443 ::tls::socket
+
+set ::oauth(auth_url)  "https://login.microsoftonline.com/common/oauth2/v2.0/authorize"
+set ::oauth(token_url) "https://login.microsoftonline.com/common/oauth2/v2.0/token"
+set ::oauth(client_id)     "b15665d9-eda6-4092-8539-0eec376afd59"
+set ::oauth(client_secret) "qtyfaBBYA403=unZUP40~_#"
+set ::oauth(redirect_uri)  "http://localhost:53682/"
+set ::oauth(scope)  "Files.Read Files.ReadWrite Files.ReadWrite.All Sites.Manage.All offline_access"
+
+# Start local HTTP server to capture the authorization code
+proc oauth_start_local_server {} {
+  set ::serverSock [socket -server oauth_accept 53682]
+  return $::serverSock
+}
+
+proc oauth_accept {chan addr port} {
+  fconfigure $chan -blocking 1 -translation crlf
+  set req [read $chan]
+
+  # Extract ?code= from the request line
+  set code ""
+  if {[regexp {GET\s+/\?code=([^&\s]+)} $req -> code]} {
+    set ::oauth(auth_code) $code
+
+    set body "<html><body style=\"font-family:Arial\"><h1>Authentication successful</h1><p>You can close this window.</p></body></html>"
+    puts $chan "HTTP/1.1 200 OK" 
+    puts $chan "Content-Type: text/html; charset=utf-8"
+    puts $chan "Content-Length: [string length $body]"
+    puts $chan ""
+    puts -nonewline $chan $body
+  } else {
+    puts $chan "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n"
+  }
+  flush $chan
+  close $chan
+
+  # Stop listening after first callback
+  catch {close $::serverSock}
+}
+
+proc oauth_build_auth_url {} {
+  set q [::http::formatQuery \
+    client_id     $::oauth(client_id) \
+    response_type code \
+    redirect_uri  $::oauth(redirect_uri) \
+    scope         $::oauth(scope) \
+    response_mode query \
+    prompt        select_account]
+  return "$::oauth(auth_url)?$q"
+}
+
+proc oauth_exchange_token {code} {
+  set headers [list Content-Type application/x-www-form-urlencoded]
+  set form [::http::formatQuery \
+    grant_type    authorization_code \
+    code          $code \
+    client_id     $::oauth(client_id) \
+    client_secret $::oauth(client_secret) \
+    redirect_uri  $::oauth(redirect_uri) \
+    scope         $::oauth(scope)]
+
+  set tok [::http::geturl $::oauth(token_url) -method POST -headers $headers -query $form]
+  set ok  [expr {[::http::status $tok] eq "ok"}]
+  set data [::http::data $tok]
+  ::http::cleanup $tok
+  if {!$ok} {return -code error "Token request failed"}
+
+  # Parse JSON and return a dict
+  return [::json::json2dict $data]
+}
+
+proc oauth_save_token_json {tokenDict} {
+  # Ensure scope is preserved – this is critical for capability detection
+  # Compute ISO 8601 UTC expiry timestamp from expires_in
+  set now   [clock seconds]
+  set delta [dict get $tokenDict expires_in]
+  set exp   [expr {$now + $delta}]
+  set expiresAt [clock format $exp -gmt 1 -format "%Y-%m-%dT%H:%M:%SZ"]
+
+  set outDict [dict create \
+    access_token  [dict get $tokenDict access_token] \
+    token_type    [dict get $tokenDict token_type] \
+    scope         [dict get $tokenDict scope] \
+    expires_at    $expiresAt \
+    expires_in    [dict get $tokenDict expires_in] \
+    refresh_token [dict get $tokenDict refresh_token] \
+    drive_id      "5D1B2B3BE100F93B" \
+    drive_type    "personal"]
+
+  set fh [open "token.json" w 0600]
+  puts $fh [::json::dict2json $outDict]
+  close $fh
 }
 ```
+
+Integration outline:
+
+1. Start the local server, then open `oauth_build_auth_url` in the default browser.
+
+2. After the callback arrives, call `oauth_exchange_token $::oauth(auth_code)`.
+
+3. Save the token using `oauth_save_token_json` ensuring `scope` is included.
 
 **Server Lifecycle**:
 1. Start before launching browser
@@ -448,6 +562,61 @@ Function: save_token_to_file(token_data)
   3. Write to ./token.json
   4. Set file permissions: 0600 (owner read/write only)
   5. Return success
+
+#### Saved `token.json` example (scope included)
+
+```json
+{
+  "access_token": "EwAoA8l6BAAURSN/FHlDW5xN9KA...",
+  "token_type": "Bearer",
+  "scope": "Files.Read Files.ReadWrite Files.ReadWrite.All Sites.Manage.All offline_access",
+  "expires_at": "2025-10-23T12:30:00Z",
+  "expires_in": 3600,
+  "refresh_token": "M.C547_BL2.0.U.-CrGZ6kp2GXdwpf5o...",
+  "drive_id": "5D1B2B3BE100F93B",
+  "drive_type": "personal"
+}
+```
+
+### 4.6 End‑to‑end steps (sequential)
+
+1. Build the authorisation URL with the client details above and scopes: `Files.Read Files.ReadWrite Files.ReadWrite.All Sites.Manage.All offline_access`.
+
+2. Start the local Tcl HTTP server on `http://localhost:53682/`.
+
+3. Open the browser to the authorisation URL and sign in.
+
+4. On redirect, extract the `code` from the callback URL.
+
+5. Exchange the `code` at the token endpoint with `client_id`, `client_secret`, `redirect_uri`, and the same scope string.
+
+6. Persist the returned JSON to `token.json`, ensuring the `scope` field is saved verbatim.
+
+7. Validate capability from `scope`:
+
+   - Contains `Sites.Manage.All` and (`Files.ReadWrite` or `Files.ReadWrite.All`) → full ACL editing enabled.
+
+   - Otherwise → read‑only; fall back to rclone token if present.
+
+8. If `token.json` expires or is missing, load the rclone token and operate in scanner mode (read‑only).
+
+## 15. Experiment artefacts and validated findings
+
+The following scripts in this repository were used to validate behaviour and token formats:
+
+- `oauth_experiment.py`: Full browser‑based flow with local server, exchanges code, and prints returned `scope`.
+
+- `show_token_format.py`: Documents and prints the expected token response structure, including `scope` and an example `token.json` layout.
+
+- `test_rclone_auth.py`: Invokes `rclone authorize onedrive` and demonstrates that the raw token response from Microsoft contains `scope`, but rclone’s saved token omits it.
+
+Observed outcomes:
+
+- Microsoft’s token response includes the `scope` field (v2 auth code flow).
+
+- rclone tokens stored in `rclone.conf` do not preserve `scope`; treat them as read‑only for ACL editing purposes.
+
+- Requesting `Sites.Manage.All` is necessary for ACL editing; it may require admin consent on organisational tenants.
 ```
 
 ## 5. Microsoft Graph API Operations for ACL Editing
