@@ -30,9 +30,7 @@ OneDriveGuard/
 - Python 3.6+
 - rclone installed and configured with OneDrive remote
 - `requests` library: `pip install requests`
-- Valid OAuth token in `~/.config/rclone/rclone.conf`. Assuming that the relevant section in rclone.conf goes by the name `OneDrive-ACL`, you can get one by
-
-   $ rclone config update OneDrive-ACL --onedrive-metadata-permissions write
+- Valid OAuth token in `~/.config/rclone/rclone.conf`
 
 ### For Tcl/Tk Version
 - Tcl/Tk 8.6+
@@ -40,6 +38,32 @@ OneDriveGuard/
 - `tls` package for HTTPS requests
 - `json` package for JSON parsing
 - Valid OAuth token in `~/.config/rclone/rclone.conf`
+
+## Permission Requirements
+
+### ACL Scanner (Read-Only Operations)
+The ACL scanner only requires **basic read permissions** and works with any standard OneDrive token:
+- **Required permissions**: `Files.Read` (standard OneDrive read access)
+- **Token type**: Regular OneDrive token (no special ACL permissions needed)
+- **Operations**: List folders, read permissions, metadata access
+- **Token refresh**: Same frequency as regular OneDrive operations
+
+### ACL Manager (Read/Write Operations)
+The ACL manager requires **elevated permissions** for modifying ACL settings:
+- **Required permissions**: `Files.ReadWrite` + `Sites.Manage.All` (for ACL modifications)
+- **Token type**: OneDrive token with ACL permissions
+- **Setup command**: `rclone config update OneDrive-ACL --onedrive-metadata-permissions write`
+- **Operations**: Create, modify, and delete permissions; send invitations
+- **Token refresh**: May require more frequent refreshes due to elevated permissions
+
+### Meta Command (Read-Only Operations)
+The meta command works with **basic read permissions**:
+- **Required permissions**: `Files.Read` (standard OneDrive read access)
+- **Token type**: Regular OneDrive token (no special ACL permissions needed)
+- **Operations**: Read item metadata, creation info, modification details
+- **Token refresh**: Same frequency as regular OneDrive operations
+
+**Recommendation**: Use the regular OneDrive token for scanning and metadata operations. Only use the ACL-specific token when you need to modify permissions.
 
 ## Installation
 
@@ -260,10 +284,18 @@ Both versions display the following ACL information:
 
 The scripts use the Microsoft Graph API endpoints:
 
-- **Get Item**: `GET /me/drive/root:/{item-path}`
-- **Get Permissions**: `GET /me/drive/items/{item-id}/permissions`
-- **Create Permission**: `POST /me/drive/items/{item-id}/invite`
-- **Delete Permission**: `DELETE /me/drive/items/{item-id}/permissions/{permission-id}`
+### Read-Only Operations (Scanner & Meta)
+- **Get Item**: `GET /me/drive/root:/{item-path}` (requires `Files.Read`)
+- **Get Permissions**: `GET /me/drive/items/{item-id}/permissions` (requires `Files.Read`)
+- **Get Item Metadata**: `GET /me/drive/items/{item-id}?expand=createdBy,lastModifiedBy` (requires `Files.Read`)
+
+### Read/Write Operations (Manager)
+- **Create Permission**: `POST /me/drive/items/{item-id}/invite` (requires `Files.ReadWrite` + `Sites.Manage.All`)
+- **Delete Permission**: `DELETE /me/drive/items/{item-id}/permissions/{permission-id}` (requires `Files.ReadWrite` + `Sites.Manage.All`)
+
+### Permission Scopes Required
+- **Basic operations**: `Files.Read` (included in standard OneDrive token)
+- **ACL modifications**: `Files.ReadWrite` + `Sites.Manage.All` (requires `--onedrive-metadata-permissions write`)
 
 The OAuth token is extracted from rclone's configuration file and used directly in API requests, bypassing the need for separate authentication.
 
